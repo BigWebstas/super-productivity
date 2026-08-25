@@ -1,6 +1,6 @@
 import { ipcRenderer, webFrame, contextBridge, webUtils } from 'electron';
 import { ElectronAPI } from './electronAPI.d';
-import { IS_GNOME_DESKTOP, IS_GNOME_WAYLAND } from './common.const';
+import { IS_GNOME_DESKTOP, IS_GNOME_WAYLAND, IS_WAYLAND } from './common.const';
 import { IPC, IPCEventValue } from './shared-with-frontend/ipc-events.const';
 import {
   getDistChannel,
@@ -94,6 +94,7 @@ const ea: ElectronAPI = {
   isLinux: () => process.platform === 'linux',
   isGnomeDesktop: () => IS_GNOME_DESKTOP,
   isGnomeWayland: () => IS_GNOME_WAYLAND,
+  isWayland: () => IS_WAYLAND,
   isMacOS: () => process.platform === 'darwin',
   isAppleSilicon: () => process.platform === 'darwin' && process.arch === 'arm64',
   isSnap: () => process && process.env && !!process.env.SNAP,

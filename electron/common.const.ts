@@ -33,3 +33,9 @@ export const isGnomeWaylandEnv = (
 export const IS_MAC = process.platform === 'darwin';
 export const IS_GNOME_DESKTOP = isGnomeDesktopEnv(process.platform, process.env);
 export const IS_GNOME_WAYLAND = isGnomeWaylandEnv(process.platform, process.env);
+// Wayland's xdg-shell protocol has no request a client can make to be kept
+// above other windows — that stacking decision belongs to the compositor
+// (e.g. KDE's "Keep Above Others" is a KWin-side window rule the user sets
+// themselves, never something an app can ask for). BrowserWindow.setAlwaysOnTop()
+// is a no-op there on every Wayland compositor, not just GNOME's.
+export const IS_WAYLAND = isWaylandEnv(process.platform, process.env);

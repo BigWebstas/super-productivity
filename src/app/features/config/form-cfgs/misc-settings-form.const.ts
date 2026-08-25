@@ -5,7 +5,7 @@ import {
   MiscConfig,
 } from '../global-config.model';
 import { T } from '../../../t.const';
-import { IS_ELECTRON, IS_GNOME_WAYLAND } from '../../../app.constants';
+import { IS_ELECTRON, IS_GNOME_WAYLAND, IS_WAYLAND } from '../../../app.constants';
 import { isValidSplitTime } from '../../../util/is-valid-split-time';
 import { isUpdateCheckPossible } from '../../../core/update-check/is-update-check-possible.util';
 
@@ -40,7 +40,10 @@ export const MISC_SETTINGS_FORM_CFG: ConfigFormSection<MiscConfig> = {
         label: T.GCF.MISC.IS_MINIMIZE_TO_TRAY,
       },
     },
-    ...((IS_ELECTRON
+    // Hidden on Wayland: the compositor owns window stacking there and gives
+    // clients no request for "always above others" (unlike X11's EWMH hint),
+    // so the toggle would silently do nothing — see IS_WAYLAND doc comment.
+    ...((IS_ELECTRON && !IS_WAYLAND
       ? [
           {
             key: 'isAlwaysOnTop',
