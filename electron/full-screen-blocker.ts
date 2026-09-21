@@ -41,7 +41,10 @@ export const initFullScreenBlocker = (IS_DEV: boolean): void => {
           ]
         : '';
 
-      win.setAlwaysOnTop(true, 'floating');
+      // 'screen-saver' outranks the main window's level-less setAlwaysOnTop(true)
+      // (misc.isAlwaysOnTop), so raising/focusing the main window during a break
+      // can't cover this overlay on macOS/Windows (level arg is a no-op elsewhere).
+      win.setAlwaysOnTop(true, 'screen-saver');
       win.setVisibleOnAllWorkspaces(true);
       win.setFullScreenable(false);
       isFullScreenWindowOpen = true;
