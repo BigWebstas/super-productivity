@@ -13,6 +13,7 @@ describe('isExternalUrlSchemeAllowed', () => {
       'https://example.com/path?q=1#frag',
       'HTTPS://EXAMPLE.COM', // scheme is case-insensitive
       'mailto:someone@example.com',
+      'mid:message-id',
       'file:///home/user/notes.txt',
       '  https://example.com  ', // surrounding whitespace tolerated
       'tel:+123456789',
@@ -33,6 +34,8 @@ describe('isExternalUrlSchemeAllowed', () => {
       // #8859 — Outlook desktop deep-link: opaque EntryID, no `//` authority.
       'outlook:0000000067E6410516B83D47AC4C8EB786CE10920700A34574545A43BF41AC9C4F77801FE8E100000000010C0000A34574545A43BF41AC9C4F77801FE8E10009672045BC0000',
       'webexteams://im?space=ff135070-68f8-11f1-9229-c7e6cca7a7cd&message=f4f13440-6b50-11f1-8868-03e71232fa87',
+      // DEVONthink item link — same app-deep-link class as obsidian:/zotero:.
+      'x-devonthink-item://23082026-1234-5678-9ABC-DEF012345678',
     ];
     allowed.forEach((url) => {
       it(`allows "${url}"`, () => {
@@ -45,6 +48,7 @@ describe('isExternalUrlSchemeAllowed', () => {
         'http:',
         'https:',
         'mailto:',
+        'mid:',
         'file:',
         'tel:',
         'sms:',
@@ -61,6 +65,7 @@ describe('isExternalUrlSchemeAllowed', () => {
         'siyuan:',
         'outlook:',
         'webexteams:',
+        'x-devonthink-item:',
       ]);
     });
   });

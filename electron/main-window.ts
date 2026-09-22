@@ -6,6 +6,7 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
+  screen,
   shell,
 } from 'electron';
 import { errorHandlerWithFrontendInform } from './error-handler-with-frontend-inform';
@@ -14,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { IPC } from './shared-with-frontend/ipc-events.const';
 import { isExternalUrlSchemeAllowed } from './shared-with-frontend/is-external-url-allowed';
 import { isLocalFileUrl, openLocalPath } from './open-url';
-import { readFileSync, stat, writeFileSync } from 'fs';
+import { readFileSync, stat } from 'fs';
 import { error, log } from 'electron-log/main';
 import { IS_MAC, IS_GNOME_WAYLAND } from './common.const';
 import {
@@ -29,10 +30,27 @@ import { getIsMinimizeToTray, getIsQuiting, setIsQuiting } from './shared-state'
 import { createMenuTemplate } from './menu';
 import { loadSimpleStoreAll } from './simple-store';
 import { SimpleStoreKey } from './shared-with-frontend/simple-store.const';
+import {
+  getWasMaximizedBeforeHide,
+  initWasMaximizedBeforeHide,
+  isUserUnmaximize,
+  setWasMaximizedBeforeHide,
+} from './window-maximized-state';
+import {
+  clampBoundsToDisplay,
+  initRestoreBounds,
+  isSampleableBounds,
+  parseStoredBounds,
+  setRestoreBounds,
+} from './window-restore-bounds';
 import { markGpuStartupSuccess } from './gpu-startup-guard';
 import { isAppOriginUrl } from './navigation-guard';
 import { assertSecureWebPreferences } from './web-preferences-guard';
 import { applyJiraImageAuth } from './jira-image-auth';
+
+// Long enough to outlast a resize or move gesture, so a drag records one
+// sample rather than one per frame.
+const BOUNDS_SAMPLE_DEBOUNCE_MS = 250;
 
 let mainWin: BrowserWindow;
 
@@ -255,6 +273,26 @@ export const createWindow = async ({
     ) {
       removeKeyInAnyCase(requestHeaders, 'User-Agent');
     }
+    // WebDavHttpAdapter marks desktop uploads because renderer fetch refuses to
+    // set Connection itself. Consume the marker here; it must not reach the
+    // server. The literal below mirrors that adapter's ELECTRON_UPLOAD_HEADER
+    // and is pinned to it by electron/webdav-connection.test.cjs — the two
+    // build targets cannot import each other.
+    const webdavUploadHeader = Object.keys(requestHeaders).find(
+      (key) => key.toLowerCase() === 'x-superproductivity-webdav-upload',
+    );
+    if (webdavUploadHeader) {
+      delete requestHeaders[webdavUploadHeader];
+      // #9985: avoid verifying on a PUT connection retaining the old file.
+      // HTTP/1.1 only — Connection is a connection-specific header that RFC 9113
+      // forbids over HTTP/2, so any conformant client drops it there. The
+      // WebdavApi verification retry budget is the cross-protocol safety net;
+      // the reported STRATO HiDrive failure was reproduced over HTTP/1.1.
+      if (details.method === 'PUT') {
+        removeKeyInAnyCase(requestHeaders, 'Connection');
+        requestHeaders.Connection = 'close';
+      }
+    }
     applyJiraImageAuth(details.url, requestHeaders, details.resourceType);
     callback({ requestHeaders });
   });
@@ -290,27 +328,54 @@ export const createWindow = async ({
   });
 
   mainWindowState.manage(mainWin);
-  setWasMaximizedBeforeHide(mainWin.isMaximized());
 
-  // Fix for #7276: electron-window-state saves state in its `closed` handler,
-  // which calls win.isMaximized() on an already-hidden window (tray/shortcut
-  // hide → quit). electron#27838 makes isMaximized() return false in that
-  // case, so the persisted state loses the maximized flag. will-quit is the
-  // only process-level hook guaranteed to fire after every window `closed`
-  // event, so the library's write has always completed by the time we patch.
-  app.once('will-quit', () => {
-    if (!getWasMaximizedBeforeHide()) return;
-    const file = path.join(app.getPath('userData'), 'window-state.json');
-    try {
-      const state = JSON.parse(readFileSync(file, 'utf8'));
-      if (!state || typeof state !== 'object' || Array.isArray(state)) return;
-      if (state.isMaximized === true) return;
-      state.isMaximized = true;
-      writeFileSync(file, JSON.stringify(state));
-    } catch (err) {
-      error('Failed to patch window-state.json for maximized flag:', err);
-    }
-  });
+  // #7276: our own flag owns the maximized bit, electron-window-state only owns
+  // size/position. The library gets this bit wrong in two ways: its `closed`
+  // handler reads isMaximized() on an already-hidden window, which no longer
+  // reports the truth on every platform, and it silently drops the whole
+  // persisted state — isMaximized included — when the last un-maximized bounds
+  // no longer fit on any connected display.
+  const persistedWasMaximized = simpleStore[SimpleStoreKey.WINDOW_WAS_MAXIMIZED];
+  // First launch after this fix shipped there is no flag yet, so adopt whatever
+  // the library restored. Without this a user who is maximized at upgrade time
+  // loses it once: manage() maximizes above, before the 'maximize' listener is
+  // attached, so nothing would ever set the flag true.
+  const wasMaximized =
+    persistedWasMaximized === undefined
+      ? mainWindowState.isMaximized === true
+      : persistedWasMaximized === true;
+  initWasMaximizedBeforeHide(wasMaximized);
+
+  // #10058: the library gets the un-maximized geometry wrong the same two ways
+  // it gets the flag wrong, so our own copy owns it. Applied before the
+  // maximize below, so un-maximizing lands on these bounds and not on the
+  // full-screen ones the library may have recorded as the restore bounds.
+  const persistedBounds = parseStoredBounds(
+    simpleStore[SimpleStoreKey.WINDOW_RESTORE_BOUNDS],
+  );
+  // Clamp rather than discard. The library resets an overhanging window to
+  // the default size; nudging it onto the nearest display keeps the size the
+  // user actually chose. Tracked as the clamped value too: seeding the raw one
+  // leaves setRestoreBounds() deduping against geometry the window never had,
+  // so the correction would be re-applied on every launch instead of sticking.
+  const restoreBounds = persistedBounds
+    ? clampBoundsToDisplay(
+        persistedBounds,
+        screen.getDisplayMatching(persistedBounds).workArea,
+      )
+    : null;
+  initRestoreBounds(restoreBounds);
+  // manage() above restores full screen (electron-window-state `config.fullScreen`
+  // defaults true), and a full-screen window reports isMaximized() === false, so
+  // this has to exclude it the same way isSampleableBounds() does. The persisted
+  // flag rather than the live getter, because setFullScreen() is async on macOS.
+  if (restoreBounds && !mainWin.isMaximized() && !mainWindowState.isFullScreen) {
+    mainWin.setBounds(restoreBounds);
+  }
+
+  if (wasMaximized && !mainWin.isMaximized()) {
+    mainWin.maximize();
+  }
 
   const url = customUrl
     ? customUrl
@@ -432,13 +497,9 @@ export const createWindow = async ({
   return mainWin;
 };
 
-// isMaximized() can return an incorrect value after hide() — this is a known issue on certain platforms/configurations (electron#27838).
-// to ensure maximized window state is restored reliably across all platforms, we manually track maximized state before hiding
-let wasMaximizedBeforeHide: boolean = false;
-export const getWasMaximizedBeforeHide = (): boolean => wasMaximizedBeforeHide;
-export const setWasMaximizedBeforeHide = (value: boolean): void => {
-  wasMaximizedBeforeHide = value;
-};
+// Re-exported so `various-shared.ts` keeps importing the window helpers from the
+// window module. Implementation lives in ./window-maximized-state.
+export { getWasMaximizedBeforeHide, setWasMaximizedBeforeHide };
 
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
 function initWinEventListeners(app: Electron.App): void {
@@ -564,12 +625,52 @@ function initWinEventListeners(app: Electron.App): void {
     showTaskWidget();
   });
 
+  // #10058: keep our own copy of the un-maximized geometry. Debounced because
+  // resize and move fire continuously while the user drags; only the settled
+  // value matters, and a sample lost to a crash leaves the previous one in place.
+  let boundsSampleTimeout: NodeJS.Timeout | undefined;
+  const sampleRestoreBounds = (): void => {
+    clearTimeout(boundsSampleTimeout);
+    boundsSampleTimeout = setTimeout(() => {
+      // 'closed' nulls mainWin, and a timer armed by the last resize/move can
+      // still be pending when it fires.
+      if (!mainWin || mainWin.isDestroyed()) {
+        return;
+      }
+      if (
+        !isSampleableBounds({
+          isVisible: mainWin.isVisible(),
+          isMinimized: mainWin.isMinimized(),
+          isMaximized: mainWin.isMaximized(),
+          isFullScreen: mainWin.isFullScreen(),
+        })
+      ) {
+        return;
+      }
+      setRestoreBounds(mainWin.getBounds());
+    }, BOUNDS_SAMPLE_DEBOUNCE_MS);
+  };
+  mainWin.on('resize', sampleRestoreBounds);
+  mainWin.on('move', sampleRestoreBounds);
+  // A pending sample would otherwise hold the event loop open past the close.
+  mainWin.on('closed', () => clearTimeout(boundsSampleTimeout));
+
   // Handle maximize and unmaximize events to change wasMaximizedBeforeHide flag accordingly
   mainWin.on('maximize', () => {
     setWasMaximizedBeforeHide(true);
   });
 
   mainWin.on('unmaximize', () => {
+    // A hide()/minimize() also emits unmaximize on some platforms; that is not
+    // the user un-maximizing, and acting on it drops the flag we need (#7276).
+    if (
+      !isUserUnmaximize({
+        isVisible: mainWin.isVisible(),
+        isMinimized: mainWin.isMinimized(),
+      })
+    ) {
+      return;
+    }
     setWasMaximizedBeforeHide(false);
   });
 }
@@ -587,7 +688,6 @@ function createMenu(quitApp: () => void): void {
         return;
       }
       if (!mainWin.isDestroyed() && mainWin.isVisible()) {
-        setWasMaximizedBeforeHide(mainWin.isMaximized());
         mainWin.hide();
       }
     },
@@ -633,7 +733,6 @@ const appCloseHandler = (app: App): void => {
         const indicator = ensureIndicator();
         if (indicator) {
           event.preventDefault();
-          setWasMaximizedBeforeHide(mainWin.isMaximized());
           mainWin.hide();
           showTaskWidget();
           return;
@@ -683,7 +782,6 @@ const appMinimizeHandler = (app: App): void => {
           return;
         }
         event.preventDefault();
-        setWasMaximizedBeforeHide(mainWin.isMaximized());
         mainWin.hide();
         showTaskWidget();
       } else {

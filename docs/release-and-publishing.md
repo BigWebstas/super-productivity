@@ -2,7 +2,7 @@
 
 > **Status:** Maintained
 >
-> **Last verified against workflows:** 2026-07-29
+> **Last verified against workflows:** 2026-09-12
 
 The GitHub Actions workflows are the executable source of truth. Update this
 runbook in the same change whenever their triggers, channels, artifacts, or secret
@@ -36,10 +36,30 @@ The `version` lifecycle updates the Android version, generates
 `build/release-notes.md`, writes the versioned Google Play changelog, stages the
 changes, and creates the npm version commit and tag.
 
+### The release-notes base
+
+Notes span from the **last published GitHub release** to `HEAD`, not from the
+newest tag: a version whose draft release was abandoned, deleted, or left
+unpublished still leaves its tag behind, and basing the notes on that tag drops
+everything the unpublished versions contained. A final version bases on the last
+published non-prerelease, a pre-release on the last published release of either
+kind. The resolved base is written to `build/release-notes-base.txt` and
+committed with the notes; `.github/workflows/build.yml` reads that file rather
+than resolving again, so the release body's Full Changelog link and contributor
+list cannot span a different range than the notes above them.
+
+Resolution needs the GitHub releases API. When it is unreachable the generator
+warns and falls back to the newest matching tag, which is the case that produces
+short notes - if you see that warning, or `build/release-notes-base.txt` names a
+version that never shipped, check the notes against the release users actually
+received before pushing.
+
 Before pushing anything:
 
 1. Review the version commit and tag.
-2. Read `build/release-notes.md` for accuracy and user-data/privacy leaks.
+2. Read `build/release-notes.md` for accuracy and user-data/privacy leaks, and
+   confirm the base in the `npm version` output is the version users last
+   received.
 3. For a final release, confirm the generated Android changelog exists under
    `android/fastlane/metadata/android/en-US/changelogs/`.
 4. Run the relevant release-note tests:
@@ -73,6 +93,12 @@ git push --atomic origin HEAD "vX.Y.Z"
 
 Apple's detailed submission behavior, API-key requirements, and recovery cases
 are in [Apple release automation](apple-release-automation.md).
+
+Feature-branch builds for outside testers are separate from releases: applying
+the `ios-test-flight` label to a same-repo PR creates an unsigned archive; a
+protected publisher then signs and uploads it to the public TestFlight group
+(`build-ios-testflight.yml` → `publish-ios-testflight.yml`). See
+[Apple release automation](apple-release-automation.md#public-testflight-builds-label-triggered).
 
 The desktop workflow's draft/prerelease flag detection does not use exactly the
 same rule as the Apple workflows. Before publishing a pre-release, explicitly
@@ -121,6 +147,57 @@ Center.
 - Pre-release and manual Apple workflows upload builds without submitting them for
   App Review. See [the TestFlight plan](plans/2026-07-14-ios-testflight-master-builds.md)
   for proposed additional branch behavior; it is not current behavior.
+
+## Reproducible Android builds
+
+The Angular service-worker builder emits `ngsw.json` (stamped with `Date.now()`,
+plus a `hashTable` of per-file content hashes) and its worker scripts, and
+`npx cap sync` copies them into the APK at `assets/public/`. That made the
+Android build unverifiable against
+[F-Droid's reproducible-build checks](https://verification.f-droid.org/) (#4155).
+
+None of it is used on Android. `src/main.ts` gates both service-worker
+registration paths on `!IS_NATIVE_PLATFORM && !IS_ELECTRON` and actively
+_unregisters_ any existing worker on those platforms, so the files are dead
+weight. `sync:android` therefore deletes them after `cap sync`, via
+`tools/strip-service-worker-assets.js`. That retires the service worker as a
+source of difference rather than pinning one field of it, and drops the bytes
+from the APK. The Lighthouse CI job uses the same script on `dist/browser`, so
+the file list lives in one place.
+
+The hook point matters: F-Droid's recipe runs `buildFrontend:prodWeb` and
+`sync:android` directly and never invokes `dist:android:prod`, so a step added
+to the latter would not reach their build.
+
+No failure to delete is fatal. Finding no files is legitimate — the service
+worker can simply be disabled for a build — and an unlink that fails is reported
+and skipped, because breaking the Android build (and with it F-Droid's prebuild)
+over a cleanup would be the worse trade. (The script does exit non-zero if given
+no target directory at all, but `strip:sw:android` hardcodes the path, so that
+cannot fire from a build.)
+
+A warning is not a safety net, though, so the outcome is asserted where it can be
+checked: `build-android.yml` verifies on the packaged APK that no
+`assets/public/` service-worker entry survived. That covers build, `cap sync`,
+strip and package together rather than any single step. It never runs on a pull
+request — push (`master`, `release/*`, `test/git-actions`, `v*` tags) and
+`workflow_dispatch` only — so it gates the publish rather than the merge. No PR
+workflow could host it: `android-tests.yml` does assemble an APK, but it
+substitutes a stand-in smoke page for the Angular bundle, so the assertion would
+be vacuous there.
+
+Two things this deliberately does not do:
+
+- **The web PWA and iOS are untouched.** The web app genuinely uses the service
+  worker. `sync:ios` is a bare `npx cap sync ios` over the same `webDir`, so the
+  iOS bundle receives the same dead files — but iOS is not a reproducibility
+  target, so there is no benefit to buy by changing App Store bundle contents.
+  If it is ever unified, `sync:ios` needs `ios/App/App/public`.
+- **It does not prove the APK reproduces.** The Gradle/AAPT layer and toolchain
+  pinning are untouched, so confirming byte-identity needs a diffoscope run
+  against an F-Droid build. This removes the one _reported_ blocker — the
+  diffoscope report in #4155 anchors on `assets-public-ngsw.json` — not
+  necessarily the last.
 
 ## Credentials and signing
 

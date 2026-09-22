@@ -50,6 +50,46 @@ export const readMigratedState = async <T extends Record<string, unknown>>(
   ) as Promise<T>;
 
 /**
+ * Strip a legacy fixture down to its archive: no active tasks, only the INBOX
+ * project and the TODAY tag, archived tasks re-homed to INBOX. Models a legacy
+ * user whose every task was archived before sync was set up (#9932).
+ */
+export const toArchiveOnlyLegacyData = (
+  data: Record<string, unknown>,
+): Record<string, unknown> => {
+  const entityIds = (slice: unknown): string[] =>
+    ((slice as { ids?: string[] })?.ids ?? []).slice();
+  const pick = (slice: unknown, keep: string[]): unknown => {
+    const entities = (slice as { entities: Record<string, unknown> }).entities;
+    return {
+      ids: keep,
+      entities: Object.fromEntries(keep.map((id) => [id, entities[id]])),
+    };
+  };
+  const archiveYoung = data.archiveYoung as {
+    task: { entities: Record<string, object> };
+  };
+  return {
+    ...data,
+    task: { ...(data.task as object), ids: [], entities: {} },
+    project: pick(data.project, ['INBOX_PROJECT']),
+    tag: pick(data.tag, ['TODAY']),
+    archiveYoung: {
+      ...archiveYoung,
+      task: {
+        ids: entityIds(archiveYoung.task),
+        entities: Object.fromEntries(
+          Object.entries(archiveYoung.task.entities).map(([id, task]) => [
+            id,
+            { ...task, projectId: 'INBOX_PROJECT', tagIds: [] },
+          ]),
+        ),
+      },
+    },
+  };
+};
+
+/**
  * Seed the legacy 'pf' IndexedDB database with data.
  * Must be called BEFORE the Angular app initializes.
  *
@@ -111,12 +151,16 @@ export const seedLegacyDatabase = async (
  * @param baseURL - App base URL (e.g., http://localhost:4242)
  * @param legacyData - Legacy data to seed (the 'data' property from backup JSON)
  * @param clientName - Human-readable name for debugging (e.g., "A", "B")
+ * @param options.seedBeforeBoot - Extra seeding that runs in the same JS-blocked
+ *   phase as the legacy database (e.g. `seedSuperSyncCredentials`), before the
+ *   reload that triggers the migration.
  */
 export const createLegacyMigratedClient = async (
   browser: Browser,
   baseURL: string,
   legacyData: Record<string, unknown>,
   clientName: string,
+  options: { seedBeforeBoot?: (page: Page) => Promise<void> } = {},
 ): Promise<{ context: BrowserContext; page: Page }> => {
   const effectiveBaseURL = baseURL || 'http://localhost:4242';
 
@@ -150,6 +194,10 @@ export const createLegacyMigratedClient = async (
   // Seed the legacy 'pf' database
   await seedLegacyDatabase(page, legacyData);
   console.log(`[Legacy Client ${clientName}] Legacy database seeded`);
+  if (options.seedBeforeBoot) {
+    await options.seedBeforeBoot(page);
+    console.log(`[Legacy Client ${clientName}] Extra pre-boot seed applied`);
+  }
 
   // Unblock JS so app can load
   await page.unroute('**/*.js');

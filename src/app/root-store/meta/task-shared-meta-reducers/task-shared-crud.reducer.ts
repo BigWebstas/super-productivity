@@ -461,12 +461,57 @@ const handleDeleteTasks = (
     return [...acc, id];
   }, []);
 
-  // Remove tasks from task state
-  let newTaskState = taskAdapter.removeMany(allIds, updatedState[TASK_FEATURE_NAME]);
+  let newTaskState = updatedState[TASK_FEATURE_NAME];
+
+  // A deleted subtask whose parent survives must also leave the parent's
+  // subTaskIds (the singular deleteTask path does this via
+  // removeTaskFromParentSideEffects). Without it the parent keeps a dangling
+  // reference that replicates to every client through the bulk op.
+  //
+  // Each one goes through the singular path's own helper, in that path's exact
+  // order — remove the entity, THEN run its parent side effects — so the two
+  // stay in step. Both halves of the ordering matter:
+  //   - emptying a parent's subTaskIds must COPY the last subtask's times onto
+  //     the parent (isCopyTimesAfterLast) rather than recalculate from the now
+  //     empty list, which reset tracked time and estimate to 0 everywhere;
+  //   - removing the whole batch up front instead would hide the surviving
+  //     siblings from each intermediate recalc, leaving the parent's timeSpent
+  //     at 0 while timeSpentOnDay held the last subtask's entries.
+  // Iteration follows the parent's subTaskIds order rather than the payload's,
+  // so every client replays the same "last" subtask.
+  const allIdsSet = new Set(allIds);
+  const parentIdsHandled = new Set<string>();
+  taskIds.forEach((id) => {
+    const parentId = (state[TASK_FEATURE_NAME].entities[id] as Task | undefined)
+      ?.parentId;
+    if (!parentId || allIdsSet.has(parentId) || parentIdsHandled.has(parentId)) {
+      return;
+    }
+    const parent = newTaskState.entities[parentId] as Task | undefined;
+    if (!parent) {
+      return;
+    }
+    parentIdsHandled.add(parentId);
+    parent.subTaskIds
+      .filter((subId) => allIdsSet.has(subId))
+      .forEach((subId) => {
+        const subTask = newTaskState.entities[subId] as Task | undefined;
+        if (subTask) {
+          newTaskState = taskAdapter.removeOne(subId, newTaskState);
+          newTaskState = removeTaskFromParentSideEffects(newTaskState, subTask, true);
+        }
+      });
+  });
+
+  // Everything the loop above did not already remove. removeMany ignores ids
+  // that are already gone.
+  newTaskState = taskAdapter.removeMany(allIds, newTaskState);
+
   newTaskState = {
     ...newTaskState,
+    // Check the expanded id list: a tracked subtask disappears with its parent.
     currentTaskId:
-      newTaskState.currentTaskId && taskIds.includes(newTaskState.currentTaskId)
+      newTaskState.currentTaskId && allIdsSet.has(newTaskState.currentTaskId)
         ? null
         : newTaskState.currentTaskId,
   };
