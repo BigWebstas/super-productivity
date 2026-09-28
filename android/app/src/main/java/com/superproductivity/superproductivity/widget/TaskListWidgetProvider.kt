@@ -32,6 +32,10 @@ class TaskListWidgetProvider : AppWidgetProvider() {
         updateAll(context, appWidgetManager, appWidgetIds)
     }
 
+    override fun onDeleted(context: Context, appWidgetIds: IntArray) {
+        WidgetBackground.remove(context, appWidgetIds)
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action != ACTION_CLICK) {
@@ -182,6 +186,9 @@ class TaskListWidgetProvider : AppWidgetProvider() {
             currentTask: WidgetCurrentTask?
         ) {
             val views = RemoteViews(context.packageName, R.layout.widget_task_list)
+            WidgetBackground.apply(
+                views, R.id.widget_task_list_root, WidgetBackground.getColor(context, appWidgetId)
+            )
 
             views.setTextViewText(R.id.widget_header_title, header)
 

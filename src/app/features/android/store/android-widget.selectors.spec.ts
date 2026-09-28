@@ -163,7 +163,11 @@ describe('selectAndroidWidgetData', () => {
     expect(result.validUntil).toBe(new Date(2026, 6, 17).getTime() + fourAmOffset);
   });
 
-  it('should include the local device currentTask when a task is being tracked', () => {
+  // currentTask needs TrackingPresenceService signals (since-timestamp, focus
+  // cycle, remote session), which live outside the store — WidgetDataService
+  // always builds it (via buildLocalCurrentTask / resolveRemoteCurrentTask,
+  // tested below), never this selector.
+  it('should always return currentTask: null — WidgetDataService overwrites it', () => {
     const result = selectAndroidWidgetData.projector(
       ['t1'],
       { t1: task('t1', { title: 'Task one', projectId: 'p1' }) },
@@ -172,13 +176,7 @@ describe('selectAndroidWidgetData', () => {
       0,
       't1',
     );
-    expect(result.currentTask).toEqual({
-      id: 't1',
-      title: 'Task one',
-      projectId: 'p1',
-      deviceLabel: getDeviceLabel(),
-      isLocal: true,
-    });
+    expect(result.currentTask).toBeNull();
   });
 
   it('should serialize to the exact v:1 blob shape consumed by WidgetData.kt (see WidgetDataTest.kt)', () => {
@@ -213,15 +211,19 @@ describe('buildLocalCurrentTask', () => {
     }) as Task;
 
   it('should return null when nothing is tracked locally', () => {
-    expect(buildLocalCurrentTask(null, {})).toBeNull();
+    expect(buildLocalCurrentTask(null, {}, null)).toBeNull();
   });
 
   it('should return null when the tracked id has no matching task entity', () => {
-    expect(buildLocalCurrentTask('missing', {})).toBeNull();
+    expect(buildLocalCurrentTask('missing', {}, null)).toBeNull();
   });
 
   it('should build the current task with the device label and isLocal true', () => {
-    const result = buildLocalCurrentTask('t1', { t1: task('t1', { title: 'Write' }) });
+    const result = buildLocalCurrentTask(
+      't1',
+      { t1: task('t1', { title: 'Write' }) },
+      null,
+    );
     expect(result).toEqual({
       id: 't1',
       title: 'Write',
@@ -231,10 +233,33 @@ describe('buildLocalCurrentTask', () => {
   });
 
   it('should include projectId only when set', () => {
-    const result = buildLocalCurrentTask('t1', {
-      t1: task('t1', { projectId: 'p1' }),
-    });
+    const result = buildLocalCurrentTask(
+      't1',
+      { t1: task('t1', { projectId: 'p1' }) },
+      null,
+    );
     expect(result?.projectId).toBe('p1');
+  });
+
+  it('should omit sinceTs/focusCycle when localInfo is null (transient race)', () => {
+    const result = buildLocalCurrentTask('t1', { t1: task('t1') }, null);
+    expect('sinceTs' in result!).toBe(false);
+    expect('focusCycle' in result!).toBe(false);
+  });
+
+  it('should include sinceTs from localInfo', () => {
+    const result = buildLocalCurrentTask('t1', { t1: task('t1') }, { sinceTs: 1000 });
+    expect(result?.sinceTs).toBe(1000);
+    expect('focusCycle' in result!).toBe(false);
+  });
+
+  it('should include focusCycle from localInfo only when present', () => {
+    const result = buildLocalCurrentTask(
+      't1',
+      { t1: task('t1') },
+      { sinceTs: 1000, focusCycle: 3 },
+    );
+    expect(result?.focusCycle).toBe(3);
   });
 });
 
@@ -253,6 +278,8 @@ describe('resolveRemoteCurrentTask', () => {
     state?: 'tracking' | 'stopped';
     taskId?: string | null;
     deviceLabel?: string;
+    sinceTs?: number;
+    focusCycle?: number;
   }): RemoteSessionView =>
     ({
       isStale: partial.isStale ?? false,
@@ -261,6 +288,8 @@ describe('resolveRemoteCurrentTask', () => {
           state: partial.state ?? 'tracking',
           taskId: partial.taskId ?? 't1',
           deviceLabel: partial.deviceLabel ?? 'Desktop',
+          sinceTs: partial.sinceTs ?? 1000,
+          ...(partial.focusCycle !== undefined ? { focusCycle: partial.focusCycle } : {}),
         },
       },
     }) as RemoteSessionView;
@@ -285,15 +314,31 @@ describe('resolveRemoteCurrentTask', () => {
     expect(resolveRemoteCurrentTask(view({}), {})).toBeNull();
   });
 
-  it('should resolve the remote task with its device label and isLocal false', () => {
-    const result = resolveRemoteCurrentTask(view({ deviceLabel: 'Desktop' }), {
-      t1: task('t1', { title: 'Write report' }),
-    });
+  it('should resolve the remote task with its device label, sinceTs, and isLocal false', () => {
+    const result = resolveRemoteCurrentTask(
+      view({ deviceLabel: 'Desktop', sinceTs: 5000 }),
+      {
+        t1: task('t1', { title: 'Write report' }),
+      },
+    );
     expect(result).toEqual({
       id: 't1',
       title: 'Write report',
       deviceLabel: 'Desktop',
       isLocal: false,
+      sinceTs: 5000,
     });
+  });
+
+  it('should include focusCycle only when the remote payload carries one', () => {
+    const result = resolveRemoteCurrentTask(view({ focusCycle: 2 }), {
+      t1: task('t1'),
+    });
+    expect(result?.focusCycle).toBe(2);
+  });
+
+  it('should omit focusCycle when the remote payload has none', () => {
+    const result = resolveRemoteCurrentTask(view({}), { t1: task('t1') });
+    expect('focusCycle' in result!).toBe(false);
   });
 });

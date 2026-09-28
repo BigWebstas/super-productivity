@@ -11,10 +11,18 @@ data class WidgetTask(
     val projectColor: String?
 )
 
-/** The task currently being tracked — on this device or, via SuperSync presence, a remote one. */
+/**
+ * The task currently being tracked — on this device or, via SuperSync presence,
+ * a remote one. [sinceTs]/[focusCycle] are display-only, degrading to null
+ * (never a fabricated value) when unavailable — see AndroidWidgetCurrentTask.
+ */
 data class WidgetCurrentTask(
+    val id: String,
     val title: String,
-    val deviceLabel: String
+    val deviceLabel: String,
+    val isLocal: Boolean,
+    val sinceTs: Long?,
+    val focusCycle: Int?
 )
 
 /**
@@ -112,8 +120,14 @@ object WidgetData {
             }
             val task = root.optJSONObject("currentTask") ?: return null
             WidgetCurrentTask(
+                id = task.getString("id"),
                 title = task.getString("title"),
-                deviceLabel = task.optString("deviceLabel", "")
+                deviceLabel = task.optString("deviceLabel", ""),
+                isLocal = task.optBoolean("isLocal", false),
+                // 0L is both optLong's default and a real instant; treat it as absent
+                // (same reasoning as AndroidWidgetData.validUntil / WidgetMeta).
+                sinceTs = task.optLong("sinceTs", 0L).takeIf { it > 0L },
+                focusCycle = if (task.isNull("focusCycle")) null else task.optInt("focusCycle")
             )
         } catch (e: Exception) {
             null

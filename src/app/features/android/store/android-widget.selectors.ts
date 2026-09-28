@@ -40,12 +40,16 @@ export const getWidgetValidUntil = (
 
 /**
  * The local device's own current task, in widget-blob shape, or null when nothing
- * is being tracked locally. Exported and pure so the local half of the
- * `currentTask` contract is unit-testable without a store.
+ * is being tracked locally. `localInfo` comes from
+ * TrackingPresenceService.localTrackingInfo — a service signal, not store state
+ * — so this is called from WidgetDataService rather than composed into the
+ * createSelector below (mirrors resolveRemoteCurrentTask). Exported and pure so
+ * it's unit-testable without a store or service.
  */
 export const buildLocalCurrentTask = (
   currentTaskId: string | null,
   taskEntities: Dictionary<Task>,
+  localInfo: { sinceTs: number; focusCycle?: number } | null,
 ): AndroidWidgetCurrentTask | null => {
   if (!currentTaskId) {
     return null;
@@ -62,6 +66,12 @@ export const buildLocalCurrentTask = (
   };
   if (task.projectId) {
     currentTask.projectId = task.projectId;
+  }
+  if (localInfo) {
+    currentTask.sinceTs = localInfo.sinceTs;
+    if (localInfo.focusCycle !== undefined) {
+      currentTask.focusCycle = localInfo.focusCycle;
+    }
   }
   return currentTask;
 };
@@ -91,9 +101,13 @@ export const resolveRemoteCurrentTask = (
     title: task.title,
     deviceLabel: view.session.payload.deviceLabel,
     isLocal: false,
+    sinceTs: view.session.payload.sinceTs,
   };
   if (task.projectId) {
     currentTask.projectId = task.projectId;
+  }
+  if (view.session.payload.focusCycle !== undefined) {
+    currentTask.focusCycle = view.session.payload.focusCycle;
   }
   return currentTask;
 };
@@ -147,7 +161,10 @@ export const selectAndroidWidgetData = createSelector(
       validUntil: getWidgetValidUntil(dayStr, startOfNextDayDiffMs),
       tasks,
       projectColors,
-      currentTask: buildLocalCurrentTask(currentTaskId, taskEntities),
+      // Always overwritten by WidgetDataService, which builds currentTask from
+      // TrackingPresenceService signals (local or remote) — see
+      // buildLocalCurrentTask / resolveRemoteCurrentTask above.
+      currentTask: null,
     };
   },
 );

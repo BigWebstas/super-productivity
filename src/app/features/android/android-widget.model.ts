@@ -28,6 +28,16 @@ export interface AndroidWidgetCurrentTask {
   deviceLabel: string;
   /** True when tracked on this device; false when tracked remotely (SuperSync presence). */
   isLocal: boolean;
+  /**
+   * DISPLAY ONLY — wall-clock ms this continuous tracking session began, never
+   * accounting. Omitted (not null) when unavailable — e.g. a transient race
+   * between the local task-tracking signal and TrackingPresenceService's own
+   * session bookkeeping — so native shows the row without a "since" line
+   * rather than a fabricated one.
+   */
+  sinceTs?: number;
+  /** Focus-session cycle number, present while a focus session is running. */
+  focusCycle?: number;
 }
 
 export interface AndroidWidgetData {
