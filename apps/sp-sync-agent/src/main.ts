@@ -5,12 +5,10 @@
  *   headless globals → logging → op log → store (hydrated) → REST server
  *
  * The data directory defaults to `%APPDATA%/sp-sync-agent` on Windows and
- * `~/.local/share/sp-sync-agent` elsewhere, so the agent's state is not mixed
- * into Super Productivity's own profile — they are separate clients that happen
- * to speak the same protocol.
+ * `~/.local/share/sp-sync-agent` elsewhere (see ./platform/data-dir).
  */
-import { homedir, platform } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
+import { defaultDataDir } from './platform/data-dir';
 import { installHeadlessGlobals } from './platform/headless-globals';
 import { configureAgentLogging } from './platform/agent-logging';
 import { generateClientId } from '../../../src/app/core/util/generate-client-id';
@@ -19,11 +17,6 @@ import { OpLogStore } from './oplog/op-log-store';
 import { hydrateFromOpLog } from './oplog/hydrate';
 import { createRouteHandler } from './rest/router';
 import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
-
-const defaultDataDir = (): string =>
-  platform() === 'win32'
-    ? join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'sp-sync-agent')
-    : join(homedir(), '.local', 'share', 'sp-sync-agent');
 
 export interface StartedAgent {
   /** Absolute path the op log and token live in. Shown by the desktop shell. */

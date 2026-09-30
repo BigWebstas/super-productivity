@@ -9,6 +9,36 @@
  * Deliberately thin. SuperSync is not wired up yet, so the window says so
  * rather than showing a settings form that does nothing.
  */
+// Import order here is load-bearing and must not be "tidied" — it mirrors
+// src/entry.ts, and both are required for the bundle to load at all:
+//
+//  1. `../platform/headless-globals-install` — app modules read `window` at
+//     module-evaluation time (`app.constants.ts` runs `!!window.SUPAndroid` at
+//     module scope), so the globals must exist before any of them is evaluated.
+//     ES semantics hoist imports above statements, so an inline
+//     `installHeadlessGlobals()` call would still run too late; it has to be a
+//     separate module imported first.
+//
+//  2. `@angular/compiler` — `@ngrx/store` and `@angular/core` ship partially
+//     compiled and fall back to the JIT compiler. A bundle is never AOT-linked,
+//     so without it the first `@ngrx/store` import throws "needs to be compiled
+//     using the JIT compiler".
+//
+// Getting this wrong fails SILENTLY and expensively: the throw happens while
+// the bundle is being required, above app.whenReady() and outside the
+// try/catch in it. The process dies with no tray, no window, no error dialog
+// and no data directory — the app simply never appears to launch.
+//  0. `../platform/agent-log-file` — FIRST, before anything that can throw, so
+//     that a failure while evaluating the modules below is written to
+//     agent.log instead of vanishing into a Windows GUI process with no console.
+//     Without it this app is undebuggable: it dies above app.whenReady() and
+//     leaves no window, tray, dialog or data dir behind.
+import '../platform/agent-log-file';
+import '../platform/headless-globals-install';
+import '@angular/compiler';
+
+import { agentLogPath } from '../platform/agent-log-file';
+
 import {
   app,
   BrowserWindow,
@@ -155,6 +185,19 @@ const buildTray = (): void => {
 
 app.on('second-instance', showStatusWindow);
 
+// Anything that escapes the try/catch below used to be invisible: no window, no
+// tray, no dialog, no log. The console is teed to agent.log (imported first
+// above), so recording it here is enough to make the failure diagnosable.
+process.on('uncaughtException', (error: Error) => {
+  console.error('[agent] Uncaught exception:', error);
+  dialogError(error);
+  app.quit();
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+  console.error('[agent] Unhandled promise rejection:', reason);
+});
+
 app.whenReady().then(async () => {
   try {
     agent = await startAgent();
@@ -188,8 +231,12 @@ app.on('before-quit', () => {
 });
 
 const dialogError = (error: unknown): void => {
+  const logPath = agentLogPath();
   dialog.showErrorBox(
     'SP Sync Agent failed to start',
-    error instanceof Error ? error.message : String(error),
+    [
+      error instanceof Error ? error.message : String(error),
+      logPath ? `\n\nA log was written to:\n${logPath}` : '',
+    ].join(''),
   );
 };

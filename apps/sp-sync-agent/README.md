@@ -142,6 +142,16 @@ The installer is **unsigned**, so Windows SmartScreen will warn on first run.
 That is expected for a locally built artifact; a certificate is needed before
 handing it to anyone else.
 
+#### Logs: `<dataDir>\agent.log`
+
+The agent has no terminal of its own, and a GUI Electron app on Windows has no
+attached console, so every diagnostic would otherwise be discarded. The first
+import in each entry points the console at **`agent.log`** in the data
+directory (`%APPDATA%\sp-sync-agent` by default, or wherever `SP_AGENT_DATA_DIR`
+points), and `uncaughtException` / `unhandledRejection` are recorded there. The
+error dialog names the file. This is the first place to look when the app does
+not appear to launch.
+
 GitHub Actions builds it on every push to `sp-bridge` that touches this
 directory: [`.github/workflows/sp-bridge-windows.yml`](../../.github/workflows/sp-bridge-windows.yml).
 It runs typecheck → tests → spike → icon → bundle → electron-builder, verifies
@@ -355,3 +365,30 @@ error, which is the dangerous kind:
   this case, so the workflow now calls it explicitly instead of relying on the
   prepare chain. Confirmed by deleting the file locally and watching the same
   error appear, then re-creating it.
+- **An installer that packaged cleanly and could not start.** The CI job went
+  green and produced a 110 MB `.exe`, and the app still never appeared. Two
+  independent bugs, both fatal at _require_ time — above `app.whenReady()` and
+  outside the try/catch inside it, so there was no window, no tray, no dialog
+  and no data directory:
+  - `scripts/build.mjs`'s `aliasPlugin` matches every specifier, and an
+    `onResolve` result takes precedence over esbuild's `external` option. It
+    resolved `electron` to a real path, so `external: ['electron']` was silently
+    inert and electron's own `index.js` got bundled in. That code then looked for
+    the runtime binary under `…/app.asar/dist/electron/dist/electron`, found
+    nothing, and threw _"Electron failed to install correctly"_. The plugin now
+    consults the same `externalPackages` set before its resolve bias.
+  - `src/electron/main.ts` was missing the two load-bearing imports that
+    `src/entry.ts` has — `headless-globals-install` and `@angular/compiler` —
+    so evaluating `../main` threw `ReferenceError: window is not defined`. The
+    entry comments already explained why the order matters; the Electron entry
+    had simply never been given them.
+- **No logs, which is why the above took a day to find.** Every diagnostic goes
+  through `console`, and a Windows GUI process has no console to go to. The
+  first import in each entry now tees it to `<dataDir>/agent.log`, and
+  `uncaughtException` / `unhandledRejection` are recorded. Verified by rebuilding
+  with the shim removed and reading the resulting stack trace out of the file.
+
+  The general lesson: a green CI run on a GUI target proves the thing _packages_,
+  not that it _launches_. Both bugs above were invisible to every gate in the
+  workflow. Anything asserted only by `electron-builder` needs a check that
+  actually loads the built bundle.

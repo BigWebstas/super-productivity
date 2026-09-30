@@ -47,6 +47,21 @@ const builtinModules = new Set([
 ]);
 
 /**
+ * Kept external: supplied by the runtime, never bundled.
+ *
+ * This list is consulted by `aliasPlugin` as well as passed to esbuild, and it
+ * has to be consulted by BOTH. The plugin's onResolve callback matches every
+ * specifier, and a callback's result takes precedence over esbuild's `external`
+ * option — so a specifier the plugin resolves to a real path is bundled no
+ * matter what `external` says. That is not academic: bundling `electron` inlines
+ * its index.js, which then looks for the runtime binary relative to __dirname
+ * (…/app.asar/dist/electron/dist/electron), fails to find it, and throws
+ * "Electron failed to install correctly" at require time — before app.whenReady,
+ * before any dialog, and before the data dir is created.
+ */
+const externalPackages = new Set(['electron', 'bufferutil', 'utf-8-validate']);
+
+/**
  * Resolves the workspace aliases and biases bare specifiers to the agent's own
  * `node_modules`.
  *
@@ -73,6 +88,12 @@ const aliasPlugin = {
       if (builtinModules.has(args.path)) {
         return { path: args.path, external: true };
       }
+      // Must precede the requireResolve bias below: returning a resolved path
+      // here would silently defeat `external`, because a plugin result wins
+      // over the option. See externalPackages.
+      if (externalPackages.has(args.path)) {
+        return { path: args.path, external: true };
+      }
       try {
         return { path: requireResolve(args.path, { paths: [appDir] }) };
       } catch {
@@ -92,7 +113,7 @@ const shared = {
   target: 'node20',
   minify,
   sourcemap,
-  external: ['electron', 'bufferutil', 'utf-8-validate'],
+  external: [...externalPackages],
   plugins: [aliasPlugin],
   logLevel: 'warning',
   metafile: true,

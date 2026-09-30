@@ -112,6 +112,19 @@ jobs:
       - name: Bundle
         run: npm run build:min
 
+      # A packaged build is not a launchable one. This loads the bundle that was
+      # just produced and fails if it throws while being required.
+      #
+      # It exists because two bugs shipped a green installer that could never
+      # start: electron's index.js was bundled in (the alias plugin silently
+      # defeated `external`), and the Electron entry was missing the two
+      # load-bearing imports its Node counterpart has. Both threw at REQUIRE
+      # time — above app.whenReady(), outside its try/catch — so the app died
+      # with no window, no tray, no dialog and no data directory. Nothing else
+      # in this workflow could see either one.
+      - name: Verify bundle loads
+        run: node scripts/check-bundle-loads.mjs
+
       # electron-builder downloads the pinned Electron runtime and the NSIS
       # toolchain on first use.
       - name: Build installer
