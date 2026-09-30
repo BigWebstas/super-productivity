@@ -1,0 +1,599 @@
+/**
+ * Route table for the local REST API.
+ *
+ * A port of `LocalRestApiHandlerService`, with the NgRx services replaced by
+ * the agent's store. The service-layer calls it makes (`taskService.add`,
+ * `taskService.update`, …) become dispatches of the SAME action creators the
+ * services dispatch, so every mutation produces the same persistent action — and
+ * therefore the same sync operation — as it does in the desktop app.
+ *
+ * Preserved deliberately, because they are behavioural contract rather than
+ * incidental detail:
+ *  - the `ok` / `data` / `error` envelope and the exact status codes;
+ *  - the writable-field allow-list and the rejected relational fields
+ *    (`parentId`, `subTaskIds`), which protect invariants that cannot be
+ *    maintained by writing the value directly;
+ *  - deadline mutual-exclusivity and the "a changed deadline clears its stale
+ *    reminder" rule;
+ *  - id lookups that compare `task.id === taskId`, so a prototype property name
+ *    like `constructor` cannot resolve to a truthy non-task.
+ */
+import { randomUUID } from 'node:crypto';
+import type { AgentStore } from '../store/agent-store';
+import type { AgentState } from '../store/agent-state';
+import { WorkContextType } from '../../../../src/app/features/work-context/work-context.model';
+import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
+import { PROJECT_FEATURE_NAME } from '../../../../src/app/features/project/store/project.reducer';
+import { TAG_FEATURE_NAME } from '../../../../src/app/features/tag/store/tag.reducer';
+import {
+  setCurrentTask,
+  unsetCurrentTask,
+  addSubTask,
+} from '../../../../src/app/features/tasks/store/task.actions';
+import { TaskSharedActions } from '../../../../src/app/root-store/meta/task-shared.actions';
+import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
+import { DEFAULT_TASK } from '../../../../src/app/features/tasks/task.model';
+import { isValidDBDateStr } from '../../../../src/app/util/get-db-date-str';
+import { TODAY_TAG } from '../../../../src/app/features/tag/tag.const';
+import type { Task } from '../../../../src/app/features/tasks/task.model';
+import type { RestRequest, RestResponse, RouteHandler } from './server';
+import { errorBody, successBody } from './server';
+
+/** Fields a caller may set. Everything else is rejected to protect invariants. */
+const ALLOWED_TASK_FIELDS = new Set<string>([
+  'title',
+  'notes',
+  'isDone',
+  'timeEstimate',
+  'timeSpent',
+  'projectId',
+  'tagIds',
+  'dueDay',
+  'dueWithTime',
+  'plannedAt',
+  'deadlineDay',
+  'deadlineWithTime',
+  'deadlineRemindAt',
+]);
+
+/**
+ * Relational fields callers try to set but that must be rejected: writing them
+ * as plain values corrupts parent<->child links and tag-ordering lists.
+ * Subtask creation is available via `POST /tasks` with `parentId`.
+ */
+const REJECTED_TASK_FIELDS = ['parentId', 'subTaskIds'] as const;
+
+const DEADLINE_FIELDS = ['deadlineDay', 'deadlineWithTime', 'deadlineRemindAt'] as const;
+
+/** Inherited from the parent by the reducer, so setting them would lie. */
+const SUBTASK_INHERITED_FIELDS = ['projectId', 'tagIds'] as const;
+
+type Json = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is Json =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const hasOwn = (value: object, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+const error = (
+  status: number,
+  code: string,
+  message: string,
+  details?: unknown,
+): RestResponse => ({
+  status,
+  body: errorBody(code, message),
+});
+
+const ok = (status: number, data: unknown): RestResponse => ({
+  status,
+  body: successBody(data),
+});
+
+const taskEntities = (state: AgentState): Record<string, Task> =>
+  (state[TASK_FEATURE_NAME] as unknown as { entities: Record<string, Task> }).entities;
+
+/**
+ * Looks a task up by id.
+ *
+ * The `id === taskId` comparison is not redundant: an entity-map lookup resolves
+ * inherited `Object.prototype` keys, so `GET /tasks/constructor` would otherwise
+ * return a truthy non-task.
+ */
+const getTaskById = (state: AgentState, taskId: string): Task | undefined => {
+  const task = taskEntities(state)[taskId];
+  return task?.id === taskId ? task : undefined;
+};
+
+const getSubTaskIds = (task: Task): string[] =>
+  Array.isArray(task.subTaskIds) ? task.subTaskIds : [];
+
+const withSubTasks = (state: AgentState, task: Task): Task & { subTasks?: Task[] } => {
+  const subTasks = getSubTaskIds(task)
+    .map((id) => getTaskById(state, id))
+    .filter((t): t is Task => !!t);
+  return subTasks.length ? { ...task, subTasks } : task;
+};
+
+/** Mirrors the app's `createNewTaskWithDefaults` for the agent's single context. */
+const createTaskWithDefaults = (title: string, additional: Partial<Task>): Task =>
+  ({
+    ...DEFAULT_TASK,
+    created: Date.now(),
+    title,
+    id: randomUUID(),
+    projectId: INBOX_PROJECT.id,
+    tagIds: [],
+    ...additional,
+  }) as Task;
+
+/** Value-level type checks for the writable fields. */
+const hasInvalidFieldValue = (fields: Json): string | undefined => {
+  const stringOrNull = (v: unknown): boolean =>
+    v === null || v === undefined || typeof v === 'string';
+  if ('title' in fields && typeof fields.title !== 'string')
+    return 'title must be a string';
+  if ('notes' in fields && typeof fields.notes !== 'string')
+    return 'notes must be a string';
+  if ('isDone' in fields && typeof fields.isDone !== 'boolean')
+    return 'isDone must be a boolean';
+  for (const key of ['timeEstimate', 'timeSpent', 'plannedAt'] as const) {
+    if (key in fields && typeof fields[key] !== 'number')
+      return `${key} must be a number`;
+  }
+  if ('projectId' in fields && typeof fields.projectId !== 'string')
+    return 'projectId must be a string';
+  if (
+    'tagIds' in fields &&
+    (!Array.isArray(fields.tagIds) || fields.tagIds.some((id) => typeof id !== 'string'))
+  ) {
+    return 'tagIds must be an array of strings';
+  }
+  for (const key of ['dueDay', 'deadlineDay'] as const) {
+    if (key in fields && !stringOrNull(fields[key]))
+      return `${key} must be a string or null`;
+    if (typeof fields[key] === 'string' && !isValidDBDateStr(fields[key])) {
+      return `${key} must be a valid YYYY-MM-DD date`;
+    }
+  }
+  for (const key of ['dueWithTime', 'deadlineWithTime', 'deadlineRemindAt'] as const) {
+    if (key in fields && !stringOrNull(fields[key]))
+      return `${key} must be a number or null`;
+    if (typeof fields[key] === 'number' && fields[key] <= 0) {
+      return `${key} must be a positive timestamp`;
+    }
+  }
+  return undefined;
+};
+
+const pickAllowedFields = (body: Json): Json => {
+  const result: Json = {};
+  for (const key of Object.keys(body)) {
+    if (ALLOWED_TASK_FIELDS.has(key)) {
+      result[key] = body[key];
+    }
+  }
+  return result;
+};
+
+export interface RouterDeps {
+  store: AgentStore;
+}
+
+export const createRouteHandler = ({ store }: RouterDeps): RouteHandler => {
+  const dispatch = (action: unknown): void => {
+    store.dispatch(action as never);
+  };
+
+  const handleListTasks = (request: RestRequest): RestResponse => {
+    const state = store.state;
+    const query = request.query;
+    const getParam = (key: string): string | undefined => {
+      const value = query[key];
+      return Array.isArray(value) ? value[0] : value;
+    };
+
+    const rawSource = getParam('source') ?? 'active';
+    const source = (['active', 'archived', 'all'] as const).includes(
+      rawSource as 'active',
+    )
+      ? (rawSource as 'active' | 'archived' | 'all')
+      : 'active';
+    // The agent keeps no separate archive store yet, so `archived` is
+    // reported as empty rather than silently answering with active tasks —
+    // answering with the wrong set is worse than answering with none.
+    const base: Task[] = source === 'archived' ? [] : Object.values(taskEntities(state));
+
+    let filtered = base;
+    const queryText = getParam('query');
+    if (queryText) {
+      const needle = queryText.toLowerCase();
+      filtered = filtered.filter((t) => t.title.toLowerCase().includes(needle));
+    }
+    const projectId = getParam('projectId');
+    if (projectId) {
+      filtered = filtered.filter((t) => t.projectId === projectId);
+    }
+    const tagId = getParam('tagId');
+    if (tagId) {
+      filtered =
+        tagId === TODAY_TAG.id
+          ? // TODAY is virtual: membership comes from the due date, never from
+            // task.tagIds (ARCHITECTURE-DECISIONS.md #2).
+            filtered.filter((t) => t.dueDay === new Date().toISOString().slice(0, 10))
+          : filtered.filter((t) => (t.tagIds ?? []).includes(tagId));
+    }
+    if ((getParam('includeDone') ?? 'false').toLowerCase() !== 'true') {
+      filtered = filtered.filter((t) => !t.isDone);
+    }
+    return ok(200, filtered);
+  };
+
+  const handleCreateTask = (request: RestRequest): RestResponse => {
+    const body = request.body;
+    if (!isRecord(body) || typeof body.title !== 'string' || !body.title.trim()) {
+      return error(400, 'INVALID_INPUT', 'Task title must be a non-empty string');
+    }
+    if ('subTaskIds' in body) {
+      return error(
+        400,
+        'UNSUPPORTED_FIELD',
+        'subTaskIds cannot be set on task creation — create the parent first, then create each child with POST /tasks using parentId',
+      );
+    }
+
+    const title = body.title.trim();
+    const fields = pickAllowedFields(body);
+    // `title` is authoritative from the trimmed value above. Left in `fields`
+    // it would be re-applied by the `...additional` spread in
+    // createTaskWithDefaults and silently restore the untrimmed string.
+    delete fields.title;
+    const invalid = hasInvalidFieldValue(fields);
+    if (invalid) {
+      return error(400, 'INVALID_INPUT', invalid);
+    }
+    if (fields.deadlineDay != null && fields.deadlineWithTime != null) {
+      return error(
+        400,
+        'INVALID_INPUT',
+        'deadlineDay and deadlineWithTime cannot both be set',
+      );
+    }
+    if (
+      fields.deadlineRemindAt != null &&
+      fields.deadlineDay == null &&
+      fields.deadlineWithTime == null
+    ) {
+      return error(400, 'INVALID_INPUT', 'deadlineRemindAt requires a deadline');
+    }
+
+    const deadlineFields: Json = {};
+    for (const field of DEADLINE_FIELDS) {
+      if (hasOwn(fields, field)) {
+        deadlineFields[field] = fields[field];
+        delete fields[field];
+      }
+    }
+
+    if ('parentId' in body) {
+      if (typeof body.parentId !== 'string' || !body.parentId) {
+        return error(400, 'INVALID_INPUT', 'parentId must be a non-empty string');
+      }
+      const inherited = SUBTASK_INHERITED_FIELDS.find((field) => field in body);
+      if (inherited) {
+        return error(
+          400,
+          'UNSUPPORTED_FIELD',
+          `${inherited} cannot be set when creating a subtask — it's inherited from the parent`,
+        );
+      }
+      const parent = getTaskById(store.state, body.parentId);
+      if (!parent) {
+        return error(404, 'PARENT_NOT_FOUND', `Parent task ${body.parentId} not found`);
+      }
+      if (parent.parentId) {
+        return error(
+          400,
+          'INVALID_PARENT',
+          'Cannot nest subtasks: parent task is itself a subtask',
+        );
+      }
+      const subTask = createTaskWithDefaults(title, fields as Partial<Task>);
+      dispatch(addSubTask({ task: subTask, parentId: parent.id }));
+      const created = getTaskById(store.state, subTask.id);
+      return created
+        ? ok(201, created)
+        : error(500, 'INTERNAL_ERROR', 'Subtask was not created');
+    }
+
+    const task = createTaskWithDefaults(title, fields as Partial<Task>);
+    dispatch(
+      TaskSharedActions.addTask({
+        task,
+        workContextId: INBOX_PROJECT.id,
+        workContextType: WorkContextType.PROJECT,
+        isAddToBacklog: false,
+        isAddToBottom: true,
+      }),
+    );
+    const created = getTaskById(store.state, task.id);
+    return created
+      ? ok(201, created)
+      : error(500, 'INTERNAL_ERROR', 'Task was not created');
+  };
+
+  const handlePatchTask = (taskId: string, request: RestRequest): RestResponse => {
+    const body = request.body;
+    if (!isRecord(body)) {
+      return error(400, 'INVALID_INPUT', 'PATCH body must be a JSON object');
+    }
+    const rejected = REJECTED_TASK_FIELDS.find((field) => field in body);
+    if (rejected) {
+      return error(
+        400,
+        'UNSUPPORTED_FIELD',
+        `${rejected} cannot be set via PATCH — re-parenting is not supported by this API`,
+      );
+    }
+
+    const existing = getTaskById(store.state, taskId);
+    if (!existing) {
+      return error(404, 'TASK_NOT_FOUND', 'Task not found');
+    }
+
+    const changes = pickAllowedFields(body);
+    const invalid = hasInvalidFieldValue(changes);
+    if (invalid) {
+      return error(400, 'INVALID_INPUT', invalid);
+    }
+    if (changes.deadlineDay != null && changes.deadlineWithTime != null) {
+      return error(
+        400,
+        'INVALID_INPUT',
+        'deadlineDay and deadlineWithTime cannot both be set',
+      );
+    }
+
+    const isProjectChange =
+      'projectId' in changes && changes.projectId !== existing.projectId;
+    if (isProjectChange) {
+      const target = changes.projectId;
+      if (typeof target !== 'string' || !target.trim()) {
+        return error(400, 'INVALID_INPUT', 'projectId must be a non-empty string');
+      }
+      if (existing.parentId) {
+        return error(
+          400,
+          'UNSUPPORTED_FIELD',
+          'projectId cannot be changed directly on a subtask — move its parent task instead',
+        );
+      }
+      const projects = (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities: Record<string, { isArchived?: boolean }>;
+        }
+      ).entities;
+      const target_ = projects[target];
+      if (!target_ || target_.isArchived) {
+        return error(
+          404,
+          'PROJECT_NOT_FOUND',
+          'Destination project not found or archived',
+        );
+      }
+    }
+
+    // Deadline fields go through their own action: the deadline meta-reducer
+    // maintains invariants (mutual exclusivity, reminder clearing, auto-plan)
+    // that a plain field write would bypass.
+    const deadlineFields: Json = {};
+    for (const field of DEADLINE_FIELDS) {
+      if (hasOwn(changes, field)) {
+        deadlineFields[field] = changes[field];
+        delete changes[field];
+      }
+    }
+
+    if (Object.keys(changes).length > 0) {
+      dispatch(
+        TaskSharedActions.updateTask({
+          task: { id: taskId, changes: changes as never },
+        }),
+      );
+    }
+
+    if (
+      hasOwn(deadlineFields, 'deadlineDay') ||
+      hasOwn(deadlineFields, 'deadlineWithTime')
+    ) {
+      const day = deadlineFields.deadlineDay;
+      const time = deadlineFields.deadlineWithTime;
+      if (day == null && time == null) {
+        dispatch(TaskSharedActions.removeDeadline({ taskId, isSkipSnack: true }));
+      } else {
+        dispatch(
+          TaskSharedActions.setDeadline({
+            taskId,
+            // Narrowed, not cast: `deadlineFields` is an untyped bag, so a
+            // caller sending `{"deadlineDay": 42}` must be turned away by the
+            // value checks above rather than reaching the reducer as `{}`.
+            ...(typeof day === 'string' ? { deadlineDay: day } : {}),
+            ...(typeof time === 'number' ? { deadlineWithTime: time } : {}),
+            isSkipSnack: true,
+          }),
+        );
+      }
+    }
+    if (hasOwn(deadlineFields, 'deadlineRemindAt')) {
+      const remindAt = deadlineFields.deadlineRemindAt;
+      if (remindAt == null) {
+        dispatch(TaskSharedActions.clearDeadlineReminder({ taskId }));
+      } else if (typeof remindAt === 'number') {
+        dispatch(
+          TaskSharedActions.setDeadline({
+            taskId,
+            deadlineRemindAt: remindAt,
+            isSkipSnack: true,
+          }),
+        );
+      }
+    }
+
+    const updated = getTaskById(store.state, taskId);
+    return updated
+      ? ok(200, updated)
+      : error(500, 'INTERNAL_ERROR', 'Task disappeared after update');
+  };
+
+  const handleTaskRoutes = (
+    method: string,
+    segments: string[],
+    request: RestRequest,
+  ): RestResponse | null => {
+    const taskId = segments[1] as string;
+    const task = getTaskById(store.state, taskId);
+    if (!task) {
+      return error(404, 'TASK_NOT_FOUND', 'Task not found');
+    }
+
+    if (segments.length === 2) {
+      if (method === 'GET') {
+        return ok(200, task);
+      }
+      if (method === 'PATCH') {
+        return handlePatchTask(taskId, request);
+      }
+      if (method === 'DELETE') {
+        // The app deletes the whole family, so a subtask's siblings go with it.
+        dispatch(
+          TaskSharedActions.deleteTask({
+            task: withSubTasks(store.state, task) as never,
+          }),
+        );
+        return ok(200, { deleted: true, id: taskId });
+      }
+    }
+
+    if (segments.length === 3 && segments[2] === 'start' && method === 'POST') {
+      dispatch(setCurrentTask({ id: taskId }));
+      return ok(200, { currentTaskId: taskId });
+    }
+
+    return null;
+  };
+
+  return (request: RestRequest): RestResponse => {
+    const { method, path } = request;
+
+    if (method === 'GET' && path === '/status') {
+      const state = store.state;
+      const taskState = state[TASK_FEATURE_NAME] as unknown as {
+        currentTaskId: string | null;
+      };
+      const currentTaskId = taskState.currentTaskId ?? null;
+      const currentTask = currentTaskId
+        ? (getTaskById(state, currentTaskId) ?? null)
+        : null;
+      return ok(200, {
+        currentTask,
+        currentTaskId,
+        taskCount: Object.keys(taskEntities(state)).length,
+      });
+    }
+
+    if (method === 'GET' && path === '/focus') {
+      return error(
+        501,
+        'NOT_IMPLEMENTED',
+        'The focus/Pomodoro slice is not implemented in the agent yet; see the roadmap in the README.',
+      );
+    }
+
+    if (method === 'GET' && path === '/task-control/current') {
+      const state = store.state;
+      const taskState = state[TASK_FEATURE_NAME] as unknown as {
+        currentTaskId: string | null;
+      };
+      const currentTaskId = taskState.currentTaskId ?? null;
+      return ok(200, currentTaskId ? (getTaskById(state, currentTaskId) ?? null) : null);
+    }
+
+    if (method === 'POST' && path === '/task-control/current') {
+      if (!isRecord(request.body)) {
+        return error(
+          400,
+          'INVALID_INPUT',
+          'Request body must be a JSON object with taskId',
+        );
+      }
+      const taskId = request.body.taskId;
+      if (taskId === null) {
+        dispatch(unsetCurrentTask());
+        return ok(200, { currentTaskId: null });
+      }
+      if (typeof taskId !== 'string') {
+        return error(400, 'INVALID_INPUT', 'taskId must be a string or null');
+      }
+      if (!getTaskById(store.state, taskId)) {
+        return error(404, 'TASK_NOT_FOUND', 'Task not found');
+      }
+      dispatch(setCurrentTask({ id: taskId }));
+      return ok(200, { currentTaskId: taskId });
+    }
+
+    if (method === 'POST' && path === '/task-control/stop') {
+      dispatch(unsetCurrentTask());
+      return ok(200, { currentTaskId: null });
+    }
+
+    if (method === 'GET' && path === '/tasks') {
+      return handleListTasks(request);
+    }
+    if (method === 'POST' && path === '/tasks') {
+      return handleCreateTask(request);
+    }
+
+    const segments = path.split('/').filter(Boolean);
+    if (segments[0] === 'tasks' && segments[1] && segments.length >= 2) {
+      const result = handleTaskRoutes(method, segments, request);
+      if (result) {
+        return result;
+      }
+    }
+
+    if (method === 'GET' && path === '/projects') {
+      const query = request.query.query;
+      const needle = (Array.isArray(query) ? query[0] : query)?.toLowerCase();
+      let projects = Object.values(
+        (
+          store.state[PROJECT_FEATURE_NAME] as unknown as {
+            entities: Record<string, { title: string }>;
+          }
+        ).entities,
+      );
+      if (needle) {
+        projects = projects.filter((p) => p.title.toLowerCase().includes(needle));
+      }
+      return ok(200, projects);
+    }
+
+    if (method === 'GET' && path === '/tags') {
+      const query = request.query.query;
+      const needle = (Array.isArray(query) ? query[0] : query)?.toLowerCase();
+      let tags = Object.values(
+        (
+          store.state[TAG_FEATURE_NAME] as unknown as {
+            entities: Record<string, { title: string }>;
+          }
+        ).entities,
+      );
+      if (needle) {
+        tags = tags.filter((t) => t.title.toLowerCase().includes(needle));
+      }
+      return ok(200, tags);
+    }
+
+    return error(404, 'NOT_FOUND', 'Route not found');
+  };
+};

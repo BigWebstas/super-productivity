@@ -1,0 +1,31 @@
+{
+  "name": "sp-sync-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Small headless Windows agent that serves Super Productivity's local REST API and syncs to a SuperSync server",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "spike": "node scripts/run-ts.mjs spike/headless-reducers.spike.ts",
+    "test": "node scripts/run-ts.mjs src/test/run-all.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node scripts/run-ts.mjs src/main.ts",
+    "build": "node scripts/build.mjs",
+    "build:min": "node scripts/build.mjs --minify --sourcemap",
+    "checkFile": "prettier --write"
+  },
+  "dependencies": {
+    "@angular/common": "^21.2.25",
+    "@angular/compiler": "^21.2.25",
+    "@angular/core": "^21.2.25",
+    "@capacitor/core": "^8.5.2",
+    "@ngrx/entity": "^21.1.1",
+    "@ngrx/store": "^21.1.1",
+    "@noble/ciphers": "^2.2.0",
+    "hash-wasm": "^4.12.0",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12"
+  }
+}

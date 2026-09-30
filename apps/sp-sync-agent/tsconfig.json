@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "useDefineForClassFields": false,
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true,
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": "../..",
+    "paths": {
+      "@super-productivity/plugin-api": ["packages/plugin-api/src/index.ts"],
+      "@sp/shared-schema": ["packages/shared-schema/src/index.ts"],
+      "@sp/sync-core": ["packages/sync-core/src/index.ts"],
+      "@sp/sync-providers/super-sync": ["packages/sync-providers/src/super-sync.ts"],
+      "@sp/sync-providers/http": ["packages/sync-providers/src/http.ts"],
+      "@sp/sync-providers/errors": ["packages/sync-providers/src/errors.ts"],
+      "@sp/sync-providers/credential-store": [
+        "packages/sync-providers/src/credential-store.ts"
+      ],
+      "@sp/sync-providers/platform": ["packages/sync-providers/src/platform.ts"],
+      "@sp/sync-providers/log": ["packages/sync-providers/src/log.ts"],
+      "@sp/sync-providers/provider-types": [
+        "packages/sync-providers/src/provider-types.ts"
+      ]
+    }
+  },
+  "ts-node": {
+    "transpileOnly": true,
+    "files": true
+  },
+  "include": ["src/**/*.ts", "spike/**/*.ts", "scripts/**/*.mjs"]
+}

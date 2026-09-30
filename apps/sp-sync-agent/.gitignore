@@ -1,0 +1,7 @@
+# The agent's own dependency tree (see README: this workspace's root install is
+# incomplete, so the agent installs what it needs locally).
+node_modules/
+
+# Build output
+dist/
+.tmp/
