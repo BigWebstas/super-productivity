@@ -331,3 +331,11 @@ error, which is the dangerous kind:
   type-checks part of it, so CI installs the repo's dependencies
   (`npm ci --ignore-scripts` at the root) and the agent's manifest carries build
   tooling only.
+- **A generated file, skipped by `--ignore-scripts`.** Skipping the root
+  `prepare` chain also skips `npm run env`, which creates
+  `src/app/config/env.generated.ts` — untracked, gitignored, and imported by
+  `src/app/util/env.ts`. The first CI attempt at that change failed on exactly
+  one missing module. `tools/load-env.js --ensure` is the purpose-built flag for
+  this case, so the workflow now calls it explicitly instead of relying on the
+  prepare chain. Confirmed by deleting the file locally and watching the same
+  error appear, then re-creating it.

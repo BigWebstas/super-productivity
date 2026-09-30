@@ -66,16 +66,28 @@ jobs:
       # checkout's node_modules, which does not exist on a fresh runner. See the
       # README's "Traps" section.
       #
-      # --ignore-scripts is deliberate and safe here. The root `prepare` chain
-      # runs husky, ts-patch, `npm run env` and builds the @sp/* dist packages;
-      # none of it is needed, because the agent compiles the workspace packages
-      # from TypeScript source via its own esbuild aliases rather than consuming
-      # their dist output. The single patch-package patch targets a WebDAV
-      # library that is not in the agent's import graph, and
-      # src/environments/environment.ts is tracked in git rather than generated.
+      # --ignore-scripts is deliberate. The root `prepare` chain runs husky,
+      # ts-patch, `npm run env` and builds the @sp/* dist packages; of those only
+      # `npm run env` matters here, and it is invoked explicitly in the next step
+      # so the dependency on it is visible rather than implied. The agent compiles
+      # the workspace packages from TypeScript source via its own esbuild aliases
+      # instead of consuming their dist output, and the single patch-package patch
+      # targets a WebDAV library absent from the agent's import graph.
       - name: Install repo dependencies
         working-directory: .
         run: npm ci --ignore-scripts
+
+      # The one generated file the agent's import graph actually needs.
+      #
+      # --ignore-scripts above skips the root `prepare` chain, which normally
+      # runs `npm run env` to create src/app/config/env.generated.ts. That file
+      # is NOT tracked in git and src/app/util/env.ts imports it, so without
+      # this step the type-check fails on a missing module. `--ensure` writes an
+      # empty placeholder, which is the intended behaviour for a build with no
+      # .env — and it is a no-op if a real one was generated already.
+      - name: Generate env placeholder
+        working-directory: .
+        run: node tools/load-env.js --ensure
 
       # The agent's own manifest carries build and packaging tooling only
       # (esbuild, electron, electron-builder, typescript, prettier). `npm ci`
