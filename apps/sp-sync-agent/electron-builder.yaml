@@ -6,6 +6,14 @@
 # The agent bundles to CommonJS with `electron` external (scripts/build.mjs), so
 # `files` only has to carry the built output and the icon — no node_modules, no
 # source. That is what keeps the installer from ballooning.
+#
+# These paths are relative to the project dir and MUST match what build.mjs
+# actually writes. electron-builder does not create missing matches: it packs
+# what it finds and then fails its own sanity check, because the `main` entry
+# ("dist/electron/main.js") is absent from the archive. Naming a path that the
+# build never produces is therefore a hard build failure, not a silently empty
+# package. `dist/main.js` (the plain-Node bundle) is deliberately not packaged;
+# the installer only needs the Electron shell.
 
 appId: com.bigwebstas.sp-sync-agent
 productName: SP Sync Agent
@@ -16,8 +24,11 @@ directories:
   buildResources: build
 
 files:
-  - electron/main.js
-  - icon.png
+  - dist/electron/main.js
+  # The tray reads this via `join(__dirname, 'icon.png')` in src/electron/main.ts,
+  # and __dirname is dist/electron/ — so the icon has to sit beside the bundle,
+  # not at dist/ root. See the copy in scripts/build.mjs.
+  - dist/electron/icon.png
 
 win:
   target:

@@ -121,5 +121,12 @@ for (const { label, ...options } of targets) {
   );
 }
 
-// The tray loads the icon from disk next to the bundle at runtime.
-copyFileSync(resolve(appDir, 'build/icon.png'), resolve(appDir, 'dist/icon.png'));
+// The tray loads the icon from disk at runtime via
+// `join(__dirname, 'icon.png')` (src/electron/main.ts). __dirname for the
+// Electron bundle is dist/electron/, so the icon must land THERE — writing it
+// to dist/ root would leave the tray with no image and, worse, would not match
+// the `files` entry in electron-builder.yaml.
+copyFileSync(
+  resolve(appDir, 'build/icon.png'),
+  resolve(appDir, 'dist/electron/icon.png'),
+);

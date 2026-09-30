@@ -118,9 +118,23 @@ installed at all.
 ### Windows installer
 
 `npm run package` runs electron-builder against `electron-builder.yaml`
-(NSIS, x64, per-user install, desktop + start-menu shortcuts). The config
-packages only `electron/main.js` and `icon.png` — no `node_modules`, no source —
-because the agent is already bundled.
+(NSIS, x64, per-user install, desktop + start-menu shortcuts). The config's
+`files` lists only `dist/electron/main.js` and `dist/electron/icon.png` — no
+source, and none of the agent's own dependency tree, because the agent is
+already bundled.
+
+Those two paths are not cosmetic: electron-builder's sanity check asserts the
+`main` entry (`dist/electron/main.js`) is present in the archive, so a `files`
+entry naming a path `scripts/build.mjs` never writes fails the build rather
+than shipping a broken package. The icon must sit beside the bundle because
+`src/electron/main.ts` reads it as `join(__dirname, 'icon.png')`.
+
+Note: electron-builder additionally copies production `node_modules` resolved
+from the **repo root** into the archive, because the agent declares
+`dependencies: {}` and so has no local collection for the collector to find —
+it falls back to the workspace root. Those are dead weight (the bundle inlines
+what it needs), but they do inflate the installer. Shrinking that means telling
+electron-builder to skip node-module collection, which is a separate change.
 
 The installer is **unsigned**, so Windows SmartScreen will warn on first run.
 That is expected for a locally built artifact; a certificate is needed before
