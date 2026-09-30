@@ -21,6 +21,24 @@ silent and cross-device.
 
 So the agent does not reimplement the domain. It **reuses it**:
 
+### Dependencies
+
+The agent's own `package.json` declares **build and packaging tooling only**
+(esbuild, electron, electron-builder, typescript, prettier). It deliberately does
+**not** declare Angular, NgRx, rxjs, zod and friends, even though it imports them
+transitively through the app sources it reuses.
+
+Those come from the repository's own `npm ci`. The agent is part of this repo
+and type-checks part of it, so their resolution path is the repo's — and
+hand-copying a subset of the app's manifest into the agent both drifts and risks
+putting two Angular copies on one type path. The last entry in
+[Traps](#traps-hit-while-building-this) is what that cost.
+
+```bash
+npm ci --ignore-scripts          # repo root: the app dependencies
+cd apps/sp-sync-agent && npm ci  # the agent's build tooling
+```
+
 | Concern                | Reused from Super Productivity                                       |
 | ---------------------- | -------------------------------------------------------------------- |
 | Operation wire format  | `src/app/op-log/core/operation.types.ts`, `@sp/shared-schema`        |
@@ -297,3 +315,19 @@ error, which is the dangerous kind:
   in `node_modules` for the rest, found built `.d.mts` files, and reported errors
   in app sources the agent resolves fine. All three now read one map from
   `scripts/aliases.mjs`, which parses `tsconfig.json`.
+- **A green local type-check that was green by accident.** The agent
+  type-checks Super Productivity's own sources, so their bare imports
+  (`@angular/core`, `rxjs`, `zod`, `typia`, `nanoid`, …) resolve by walking up
+  from the importing file. Inside this git worktree that walk reaches the
+  **parent checkout's** `node_modules`, a complete install — so everything
+  passed locally while depending on a machine accident. The first CI run failed
+  with hundreds of `Cannot find module` errors in app code, because a fresh
+  runner has no such ancestor.
+  Two wrong fixes were tried before the right one. Re-declaring the app's
+  dependencies in the agent's `package.json` drifts immediately and would have
+  put a second, divergent Angular copy on the type path. A `paths` catch-all
+  pointing at the agent's own `node_modules` had the same shadowing hazard.
+  The correct answer is the boring one: the agent is part of this repo and
+  type-checks part of it, so CI installs the repo's dependencies
+  (`npm ci --ignore-scripts` at the root) and the agent's manifest carries build
+  tooling only.

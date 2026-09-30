@@ -34,7 +34,7 @@ jobs:
   windows-installer:
     name: Windows x64 (NSIS)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     defaults:
       run:
@@ -51,14 +51,36 @@ jobs:
           # target in scripts/build.mjs.
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/sp-sync-agent/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            apps/sp-sync-agent/package-lock.json
 
-      # `npm ci` rather than `npm install`: the agent pins its own dependency
-      # set, and the root workspace install is not needed to build it. Every
-      # dependency the agent reuses from the app (Angular, NgRx, Capacitor) is
-      # declared in apps/sp-sync-agent/package.json precisely so this step is
-      # self-sufficient.
-      - name: Install dependencies
+      # The repo install comes FIRST and is not optional.
+      #
+      # The agent type-checks and bundles Super Productivity's own sources, so
+      # it needs the repo's dependencies (Angular, NgRx, typia, zod, rxjs, …).
+      # They are resolved relative to the importing file — src/app/** and
+      # packages/** — so only a root install puts them on the resolution path.
+      # This is also what separates a green local type-check from a red CI one:
+      # on a dev machine inside a worktree, that walk silently reaches the PARENT
+      # checkout's node_modules, which does not exist on a fresh runner. See the
+      # README's "Traps" section.
+      #
+      # --ignore-scripts is deliberate and safe here. The root `prepare` chain
+      # runs husky, ts-patch, `npm run env` and builds the @sp/* dist packages;
+      # none of it is needed, because the agent compiles the workspace packages
+      # from TypeScript source via its own esbuild aliases rather than consuming
+      # their dist output. The single patch-package patch targets a WebDAV
+      # library that is not in the agent's import graph, and
+      # src/environments/environment.ts is tracked in git rather than generated.
+      - name: Install repo dependencies
+        working-directory: .
+        run: npm ci --ignore-scripts
+
+      # The agent's own manifest carries build and packaging tooling only
+      # (esbuild, electron, electron-builder, typescript, prettier). `npm ci`
+      # rather than `npm install` so the build is reproducible.
+      - name: Install agent tooling
         run: npm ci
 
       - name: Type-check
@@ -79,13 +101,12 @@ jobs:
         run: npm run build:min
 
       # electron-builder downloads the pinned Electron runtime and the NSIS
-      # toolchain on first use; both are cached by the runner image afterwards.
+      # toolchain on first use.
       - name: Build installer
         run: npx electron-builder --config electron-builder.yaml --win --x64
         env:
-          # Unsigned build. Keeps electron-builder from waiting on a signing
-          # certificate it cannot find, and fails loudly if a cert is later
-          # expected but absent.
+          # Unsigned build. Stops electron-builder waiting on a signing
+          # certificate it cannot find.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Verify installer exists
