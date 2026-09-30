@@ -129,12 +129,14 @@ entry naming a path `scripts/build.mjs` never writes fails the build rather
 than shipping a broken package. The icon must sit beside the bundle because
 `src/electron/main.ts` reads it as `join(__dirname, 'icon.png')`.
 
-Note: electron-builder additionally copies production `node_modules` resolved
-from the **repo root** into the archive, because the agent declares
-`dependencies: {}` and so has no local collection for the collector to find —
-it falls back to the workspace root. Those are dead weight (the bundle inlines
-what it needs), but they do inflate the installer. Shrinking that means telling
-electron-builder to skip node-module collection, which is a separate change.
+Note on size: the unpacked app is ~360 MB, and essentially all of that is the
+Electron runtime itself, not the agent. `app.asar` is ~3.8 MB, of which ~2.9 MB
+is the agent bundle. electron-builder does additionally collect a handful of
+stray packages from the repo root (it walks up for production `node_modules`,
+and the agent declares none of its own), but that measures ~1 MB and it logs
+"cannot find path for dependency" for the rest — not worth chasing. If the size
+ever matters, the lever is dropping Electron for a plain Node package, not
+trimming these entries.
 
 The installer is **unsigned**, so Windows SmartScreen will warn on first run.
 That is expected for a locally built artifact; a certificate is needed before
