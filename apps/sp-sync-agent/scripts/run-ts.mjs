@@ -19,27 +19,19 @@ import Module, { isBuiltin } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { loadAliases } from './aliases.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(appDir, '../..');
-
-/** Workspace path aliases, mirroring tsconfig.base.json. */
-const ALIASES = {
-  '@super-productivity/plugin-api': 'packages/plugin-api/src/index.ts',
-  '@sp/shared-schema': 'packages/shared-schema/src/index.ts',
-  '@sp/sync-core': 'packages/sync-core/src/index.ts',
-  '@sp/sync-providers/super-sync': 'packages/sync-providers/src/super-sync.ts',
-  '@sp/sync-providers/http': 'packages/sync-providers/src/http.ts',
-  '@sp/sync-providers/errors': 'packages/sync-providers/src/errors.ts',
-  '@sp/sync-providers/credential-store':
-    'packages/sync-providers/src/credential-store.ts',
-  '@sp/sync-providers/platform': 'packages/sync-providers/src/platform.ts',
-  '@sp/sync-providers/log': 'packages/sync-providers/src/log.ts',
-  '@sp/sync-providers/provider-types': 'packages/sync-providers/src/provider-types.ts',
-};
+/**
+ * Workspace path aliases, read from tsconfig.json so this runner, the esbuild
+ * bundler and the type-checker can never disagree about them. They were three
+ * hand-maintained copies that drifted within one commit of each other.
+ */
+const { aliases: ALIASES } = loadAliases();
 
 const COMPILER_OPTIONS = {
   target: ts.ScriptTarget.ES2022,

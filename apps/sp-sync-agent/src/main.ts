@@ -26,6 +26,8 @@ const defaultDataDir = (): string =>
     : join(homedir(), '.local', 'share', 'sp-sync-agent');
 
 export interface StartedAgent {
+  /** Absolute path the op log and token live in. Shown by the desktop shell. */
+  dataDir: string;
   store: AgentStore;
   opLog: OpLogStore;
   server: LocalRestApiServer;
@@ -83,6 +85,7 @@ export const startAgent = async (
   );
 
   return {
+    dataDir: resolve(dataDir),
     store,
     opLog,
     server,

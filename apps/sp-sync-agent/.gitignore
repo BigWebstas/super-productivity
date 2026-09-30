@@ -5,3 +5,8 @@ node_modules/
 # Build output
 dist/
 .tmp/
+
+# electron-builder output. Note: build/ is NOT ignored — the generated
+# icon.png/icon.ico are committed so `npm run package` works in a clean
+# checkout without running `npm run icon` first. Regenerate with that script.
+release/

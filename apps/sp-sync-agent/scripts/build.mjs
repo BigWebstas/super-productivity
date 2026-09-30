@@ -1,43 +1,33 @@
 /**
- * Bundles the agent to a single standalone CommonJS file.
+ * Bundles the agent to standalone CommonJS files.
+ *
+ * Two outputs, because the agent has two runtimes:
+ *  - `dist/main.js`         plain Node (servers, CI, `node main.js`)
+ *  - `dist/electron/main.js` the Electron desktop shell
  *
  * Why a bundle rather than `tsc` output: the agent imports Super Productivity's
- * own sources from `../../../src/app/**` and the workspace packages via the
- * `@sp/*` aliases. A `tsc` build would either refuse to emit them (they sit
- * outside `rootDir`) or copy the entire Angular app tree into `dist/`. The
- * bundle inlines exactly the reachable graph and produces one file that runs on
- * a bare Node install with no `node_modules` and no repo checkout.
+ * own sources from `../../../src/app/**` and the workspace packages through the
+ * `@sp/*` aliases. A `tsc` build either refuses to emit those (they sit outside
+ * `rootDir`) or copies the entire Angular app tree into `dist/`. esbuild inlines
+ * exactly the reachable graph and produces files that run with no
+ * `node_modules` and no repo checkout.
  *
- * Node builtins and `electron` stay external. `electron` is required lazily by
- * the future tray/packaging layer; marking it external keeps this build usable
- * under plain `node` today instead of failing at startup on a missing module.
+ * `electron` stays external in both: the desktop shell gets it from the runtime,
+ * and keeping it external is what lets the plain-Node build run without Electron
+ * installed at all.
  *
  * Usage: node scripts/build.mjs [--minify] [--sourcemap] [--outfile <path>]
  */
 import { build } from 'esbuild';
 import { builtinModules as builtinModuleNames, createRequire } from 'node:module';
-import { rmSync, mkdirSync, statSync } from 'node:fs';
+import { rmSync, mkdirSync, statSync, copyFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadAliases } from './aliases.mjs';
 
 const requireResolve = createRequire(import.meta.url).resolve;
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(appDir, '../..');
-
-/** Mirrors the path aliases in tsconfig.json / scripts/run-ts.mjs. */
-const ALIASES = {
-  '@super-productivity/plugin-api': 'packages/plugin-api/src/index.ts',
-  '@sp/shared-schema': 'packages/shared-schema/src/index.ts',
-  '@sp/sync-core': 'packages/sync-core/src/index.ts',
-  '@sp/sync-providers/super-sync': 'packages/sync-providers/src/super-sync.ts',
-  '@sp/sync-providers/http': 'packages/sync-providers/src/http.ts',
-  '@sp/sync-providers/errors': 'packages/sync-providers/src/errors.ts',
-  '@sp/sync-providers/credential-store':
-    'packages/sync-providers/src/credential-store.ts',
-  '@sp/sync-providers/platform': 'packages/sync-providers/src/platform.ts',
-  '@sp/sync-providers/log': 'packages/sync-providers/src/log.ts',
-  '@sp/sync-providers/provider-types': 'packages/sync-providers/src/provider-types.ts',
-};
+const { aliases: ALIASES } = loadAliases();
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
@@ -49,24 +39,22 @@ const value = (name, fallback) => {
 const outfile = resolve(appDir, value('--outfile', 'dist/main.js'));
 const minify = flag('--minify');
 const sourcemap = flag('--sourcemap') ? 'external' : false;
+const electronOutfile = resolve(appDir, 'dist/electron/main.js');
 
-/**
- * Rewrites the workspace aliases to absolute paths.
- *
- * esbuild resolves from the importing file, and the app's own sources sit
- * outside the agent, so the aliases have to be absolute to be found at all.
- *
- * Bare specifiers are resolved here too, biased to the agent's own
- * `node_modules`. Two reasons: an `import '@ngrx/store'` from inside
- * `src/app/**` would otherwise walk up to the repo root, whose install in this
- * workspace is partially broken (empty package directories); and returning
- * `null` lets esbuild apply its own algorithm, which has no such bias.
- */
 const builtinModules = new Set([
   ...builtinModuleNames,
   ...builtinModuleNames.map((name) => `node:${name}`),
 ]);
 
+/**
+ * Resolves the workspace aliases and biases bare specifiers to the agent's own
+ * `node_modules`.
+ *
+ * The bias matters: an `import '@ngrx/store'` from inside `src/app/**` would
+ * otherwise walk up to the repo root, whose install is not guaranteed complete
+ * (this workspace has empty package directories), and esbuild has no way to
+ * express "prefer this directory" for a plugin callback.
+ */
 const aliasPlugin = {
   name: 'sp-workspace-aliases',
   setup(pluginBuild) {
@@ -75,13 +63,12 @@ const aliasPlugin = {
       for (const alias of prefixes) {
         if (args.path === alias || args.path.startsWith(`${alias}/`)) {
           const rest = args.path.slice(alias.length).replace(/^\//, '');
-          const mapped = resolve(repoRoot, ALIASES[alias]);
+          const mapped = ALIASES[alias];
           return { path: rest ? resolve(dirname(mapped), rest) : mapped };
         }
       }
-
       if (args.path.startsWith('.') || isAbsolute(args.path)) {
-        return null; // relative/absolute: esbuild's own handling is correct
+        return null;
       }
       if (builtinModules.has(args.path)) {
         return { path: args.path, external: true };
@@ -89,20 +76,16 @@ const aliasPlugin = {
       try {
         return { path: requireResolve(args.path, { paths: [appDir] }) };
       } catch {
-        // Not resolvable from the agent (e.g. a dependency only present in the
-        // repo root). Let esbuild try its normal resolution and report it.
         return null;
       }
     });
   },
 };
 
-rmSync(dirname(outfile), { recursive: true, force: true });
-mkdirSync(dirname(outfile), { recursive: true });
+rmSync(resolve(appDir, 'dist'), { recursive: true, force: true });
+mkdirSync(dirname(electronOutfile), { recursive: true });
 
-const result = await build({
-  entryPoints: [resolve(appDir, 'src/entry.ts')],
-  outfile,
+const shared = {
   bundle: true,
   platform: 'node',
   format: 'cjs',
@@ -111,17 +94,32 @@ const result = await build({
   sourcemap,
   external: ['electron', 'bufferutil', 'utf-8-validate'],
   plugins: [aliasPlugin],
-  logLevel: 'info',
+  logLevel: 'warning',
   metafile: true,
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
   },
-});
+};
 
-const { size } = statSync(outfile);
-const inputs = Object.keys(result.metafile.inputs).length;
-console.log(
-  `[build] ${outfile}\n` +
-    `[build] ${inputs} modules bundled, ${(size / 1024).toFixed(0)} KiB` +
-    `${minify ? ' (minified)' : ''}${sourcemap ? ' + sourcemap' : ''}`,
-);
+const targets = [
+  { label: 'node', entryPoints: [resolve(appDir, 'src/entry.ts')], outfile },
+  {
+    label: 'electron',
+    entryPoints: [resolve(appDir, 'src/electron/main.ts')],
+    outfile: electronOutfile,
+  },
+];
+
+for (const { label, ...options } of targets) {
+  const result = await build({ ...shared, ...options });
+  const { size } = statSync(options.outfile);
+  const inputs = Object.keys(result.metafile.inputs).length;
+  console.log(
+    `[build:${label}] ${options.outfile}\n` +
+      `[build:${label}] ${inputs} modules, ${(size / 1024).toFixed(0)} KiB` +
+      `${minify ? ' (minified)' : ''}${sourcemap ? ' + sourcemap' : ''}`,
+  );
+}
+
+// The tray loads the icon from disk next to the bundle at runtime.
+copyFileSync(resolve(appDir, 'build/icon.png'), resolve(appDir, 'dist/icon.png'));

@@ -2,30 +2,39 @@
   "name": "sp-sync-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Small headless Windows agent that serves Super Productivity's local REST API and syncs to a SuperSync server",
+  "description": "Small headless agent that serves Super Productivity's local REST API and syncs to a SuperSync server",
   "license": "MIT",
-  "main": "dist/main.js",
+  "main": "dist/electron/main.js",
   "scripts": {
     "spike": "node scripts/run-ts.mjs spike/headless-reducers.spike.ts",
     "test": "node scripts/run-ts.mjs src/test/run-all.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node scripts/run-ts.mjs src/main.ts",
+    "icon": "node scripts/make-icon.mjs",
     "build": "node scripts/build.mjs",
     "build:min": "node scripts/build.mjs --minify --sourcemap",
-    "checkFile": "prettier --write"
+    "package": "node scripts/build.mjs --minify && electron-builder --config electron-builder.yaml",
+    "format": "prettier --write \"**/*.{ts,mjs,json,md,yaml,yml}\""
   },
+  "//dependencies": "Bundled into dist/main.js by esbuild, so these are BUILD-time requirements of the app sources this agent reuses, not runtime deps of the shipped file. @angular/compiler is required at RUNTIME: @ngrx/store and @angular/core ship partially compiled and fall back to the JIT compiler, which a bundle never links. Versions mirror the root manifest on purpose — a different Angular major here would break against the app sources.",
   "dependencies": {
-    "@angular/common": "^21.2.25",
-    "@angular/compiler": "^21.2.25",
-    "@angular/core": "^21.2.25",
-    "@capacitor/core": "^8.5.2",
+    "@angular/common": "^21.2.22",
+    "@angular/compiler": "^21.2.22",
+    "@angular/core": "^21.2.22",
+    "@capacitor/core": "^8.4.1",
     "@ngrx/entity": "^21.1.1",
-    "@ngrx/store": "^21.1.1",
+    "@ngrx/store": "21.1.1",
     "@noble/ciphers": "^2.2.0",
     "hash-wasm": "^4.12.0",
     "rxjs": "^7.8.2"
   },
+  "//devDependencies": "electron/electron-builder are the desktop packaging toolchain and are only needed to produce an installer. typescript and @types/node back the `typecheck` script; without them declared, `tsc` silently resolves from the repo root locally and is simply absent in a clean CI checkout.",
   "devDependencies": {
-    "esbuild": "^0.25.12"
+    "@types/node": "^22.19.17",
+    "electron": "43.5.0",
+    "electron-builder": "^26.16.1",
+    "esbuild": "^0.25.0",
+    "prettier": "^3.8.3",
+    "typescript": "~5.9.3"
   }
 }

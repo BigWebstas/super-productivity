@@ -2,8 +2,19 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
-    "module": "CommonJS",
-    "moduleResolution": "node",
+    "types": ["node"],
+    // `preserve` + `bundler` mirrors the repo's tsconfig.base.json and, more
+    // importantly, mirrors how the code is actually executed: esbuild resolves
+    // with bundler semantics and maps every @sp/* alias to workspace SOURCE.
+    // Under the previous CommonJS/node10 setting, TypeScript ignored `paths` for
+    // the @sp/* subpaths it did not list, fell back to the workspace symlinks in
+    // node_modules, found their built .d.mts, and then failed to read them —
+    // reporting errors in app sources the agent never has a problem with.
+    //
+    // This config is used for type-checking only. scripts/run-ts.mjs transpiles
+    // with its own CommonJS options, since it has to `require` the result.
+    "module": "preserve",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
@@ -16,7 +27,6 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
     "noEmit": true,
-    "types": ["node"],
     "baseUrl": "../..",
     "paths": {
       "@super-productivity/plugin-api": ["packages/plugin-api/src/index.ts"],
@@ -32,12 +42,26 @@
       "@sp/sync-providers/log": ["packages/sync-providers/src/log.ts"],
       "@sp/sync-providers/provider-types": [
         "packages/sync-providers/src/provider-types.ts"
-      ]
+      ],
+      "@sp/sync-providers/dropbox": ["packages/sync-providers/src/dropbox.ts"],
+      "@sp/sync-providers/webdav": ["packages/sync-providers/src/webdav.ts"],
+      "@sp/sync-providers/local-file": ["packages/sync-providers/src/local-file.ts"],
+      "@sp/sync-providers/onedrive": ["packages/sync-providers/src/onedrive.ts"],
+      "@sp/sync-providers/file-based": ["packages/sync-providers/src/file-based.ts"],
+      "@sp/sync-providers/pkce": ["packages/sync-providers/src/pkce.ts"],
+      "@sp/keyboard-config": ["electron/shared-with-frontend/keyboard-config.model.ts"]
     }
   },
   "ts-node": {
     "transpileOnly": true,
     "files": true
   },
-  "include": ["src/**/*.ts", "spike/**/*.ts", "scripts/**/*.mjs"]
+  "//include": "window-ea.d.ts is the `declare global { interface Window { ea } }` augmentation that app.constants.ts relies on when it reads `window.ea` at module scope. It is not reachable from the agent's own sources, so without listing it the type-check reports four bogus errors in app code the agent reuses. electronAPI.d.ts alone is not enough: it declares the ElectronAPI type, it does not attach it to Window.",
+  "include": [
+    "src/**/*.ts",
+    "spike/**/*.ts",
+    "scripts/**/*.mjs",
+    "../../src/app/core/window-ea.d.ts"
+  ],
+  "exclude": ["node_modules", "dist", "release"]
 }

@@ -79,17 +79,40 @@ runtime rather than as a build error — that is how the invented
 
 ```bash
 cd apps/sp-sync-agent
-node scripts/build.mjs                  # dist/main.js            (~3.7 MiB)
-node scripts/build.mjs --minify         # dist/main.js            (~1.8 MiB)
-node scripts/build.mjs --minify --sourcemap
+npm run build          # dist/main.js + dist/electron/main.js
+npm run build:min      # minified (+ sourcemap)
+npm run package        # bundle + electron-builder → release/*.exe
+npm run icon           # regenerate build/icon.{png,ico}
 ```
 
-One self-contained CommonJS file. It runs on a bare Node 20+ install with **no
-`node_modules` and no repo checkout**:
+Two self-contained CommonJS bundles, because the agent has two runtimes:
 
-```bash
-node main.js
-```
+| Output                  | Runtime        | Use                         |
+| ----------------------- | -------------- | --------------------------- |
+| `dist/main.js`          | plain Node 20+ | servers, CI, `node main.js` |
+| `dist/electron/main.js` | Electron       | the Windows desktop shell   |
+
+Both run with **no `node_modules` and no repo checkout** (verified from an empty
+directory). `electron` stays external: the desktop shell gets it from the runtime,
+and keeping it external is what lets the plain-Node build run without Electron
+installed at all.
+
+### Windows installer
+
+`npm run package` runs electron-builder against `electron-builder.yaml`
+(NSIS, x64, per-user install, desktop + start-menu shortcuts). The config
+packages only `electron/main.js` and `icon.png` — no `node_modules`, no source —
+because the agent is already bundled.
+
+The installer is **unsigned**, so Windows SmartScreen will warn on first run.
+That is expected for a locally built artifact; a certificate is needed before
+handing it to anyone else.
+
+GitHub Actions builds it on every push to `sp-bridge` that touches this
+directory: [`.github/workflows/sp-bridge-windows.yml`](../../.github/workflows/sp-bridge-windows.yml).
+It runs typecheck → tests → spike → icon → bundle → electron-builder, verifies
+an `.exe` actually appeared, and uploads it as an artifact. A Windows binary
+cannot be cross-built from Linux, hence a `windows-latest` runner.
 
 Verified: the bundle boots from an empty directory, serves the API, enforces
 auth and the `Host` check, writes operations, and after a restart replays them
@@ -220,11 +243,10 @@ Ordered by dependency. Each step is independently testable. Steps 1–2 are done
 5. **Focus/timer slice** — `/focus` and `/status` timing need focus-mode state
    and a ticker.
 6. **Archive store** — `POST /tasks/:id/archive` and `?source=archived`.
-7. **Electron shell + Windows packaging** — tray, settings for server URL /
-   token / master password, installer. The bundle is already a single file, so
-   this is packaging (`node main.js` → a real `.exe`), not more bundling. A
-   Windows binary cannot be cross-built from Linux with esbuild, so this step
-   needs a Windows host or CI.
+7. ~~**Electron shell + Windows packaging**~~ — done for the shell and the
+   installer: `src/electron/main.ts` (tray, status window, single-instance lock)
+   and an electron-builder NSIS config built by CI. Still open: a settings UI for
+   the SuperSync URL / token / master password, and start-on-login.
 
 ### Known scope risk
 
@@ -264,3 +286,14 @@ error, which is the dangerous kind:
   `INBOX_PROJECT.id`), and the transpile-only runner evaluated the bad import to
   `undefined` instead of failing — so the "Inbox exists" assertion was the only
   thing that caught it.
+- **A rewritten `package.json` that silently dropped 8 dependencies.** Editing
+  the manifest to add packaging tools replaced the dependency block; the packages
+  were still in `node_modules`, so every local command kept working while a clean
+  `npm ci` would have failed outright. Nothing in a dev loop can catch this —
+  only reading the manifest back, or letting CI do a clean install.
+- **Workspace aliases triplicated and drifting.** `tsconfig.json`,
+  `scripts/run-ts.mjs` and `scripts/build.mjs` each carried their own copy. The
+  scripts listed a subset, so `tsc` fell back to the `@sp/*` workspace symlinks
+  in `node_modules` for the rest, found built `.d.mts` files, and reported errors
+  in app sources the agent resolves fine. All three now read one map from
+  `scripts/aliases.mjs`, which parses `tsconfig.json`.

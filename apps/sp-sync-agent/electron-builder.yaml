@@ -1,0 +1,39 @@
+# electron-builder configuration for the SP Sync Agent desktop shell.
+#
+# Kept out of package.json so the packaging contract is readable in one place
+# and so the agent's package.json stays a plain dependency manifest.
+#
+# The agent bundles to CommonJS with `electron` external (scripts/build.mjs), so
+# `files` only has to carry the built output and the icon — no node_modules, no
+# source. That is what keeps the installer from ballooning.
+
+appId: com.bigwebstas.sp-sync-agent
+productName: SP Sync Agent
+copyright: MIT
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - electron/main.js
+  - icon.png
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  # No code signing is configured. An unsigned installer triggers SmartScreen,
+  # which is expected for a locally built artifact; add a certificate before
+  # distributing this to anyone else.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SP Sync Agent
+
+publish: null

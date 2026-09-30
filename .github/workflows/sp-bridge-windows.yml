@@ -1,0 +1,112 @@
+name: SP Sync Agent (Windows installer)
+
+# Builds the SP Sync Agent desktop installer from apps/sp-sync-agent.
+#
+# Scope is deliberately narrow: this workflow exists to produce a Windows
+# installer for the agent, not to validate the Super Productivity app. It runs
+# the agent's own gates (typecheck, tests, bundle) first, because every one of
+# them has caught a real defect that a green build did not — see the "Traps"
+# section of apps/sp-sync-agent/README.md.
+
+on:
+  push:
+    branches:
+      - sp-bridge
+    paths:
+      - 'apps/sp-sync-agent/**'
+      - '.github/workflows/sp-bridge-windows.yml'
+  pull_request:
+    paths:
+      - 'apps/sp-sync-agent/**'
+      - '.github/workflows/sp-bridge-windows.yml'
+  # Lets a maintainer kick a build without touching a file.
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes an in-flight installer irrelevant.
+  group: sp-bridge-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    name: Windows x64 (NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: apps/sp-sync-agent
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Matches the root project's engine floor and the `node20` esbuild
+          # target in scripts/build.mjs.
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/sp-sync-agent/package-lock.json
+
+      # `npm ci` rather than `npm install`: the agent pins its own dependency
+      # set, and the root workspace install is not needed to build it. Every
+      # dependency the agent reuses from the app (Angular, NgRx, Capacitor) is
+      # declared in apps/sp-sync-agent/package.json precisely so this step is
+      # self-sufficient.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Feasibility spike
+        run: npm run spike
+
+      - name: Generate icon
+        run: npm run icon
+
+      # Minified: the installer ships this file, and the source map is not
+      # wanted inside a distributed artifact.
+      - name: Bundle
+        run: npm run build:min
+
+      # electron-builder downloads the pinned Electron runtime and the NSIS
+      # toolchain on first use; both are cached by the runner image afterwards.
+      - name: Build installer
+        run: npx electron-builder --config electron-builder.yaml --win --x64
+        env:
+          # Unsigned build. Keeps electron-builder from waiting on a signing
+          # certificate it cannot find, and fails loudly if a cert is later
+          # expected but absent.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify installer exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(release/*.exe)
+          if [ ${#installers[@]} -eq 0 ]; then
+            echo "::error::electron-builder produced no .exe in release/"
+            ls -la release/ || true
+            exit 1
+          fi
+          for f in "${installers[@]}"; do
+            echo "installer: $f ($(du -h "$f" | cut -f1))"
+          done
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: sp-sync-agent-windows-x64
+          path: apps/sp-sync-agent/release/*.exe
+          if-no-files-found: error
+          retention-days: 30
