@@ -100,7 +100,7 @@ const stubProvider = (server: StubServer): SuperSyncProvider => {
       seq = next;
       server.seqCalls.push(next);
     },
-    downloadOps: async (sinceSeq: number) => {
+    downloadOps: async (sinceSeq: number, excludeClient?: string) => {
       server.downloadSinceSeqs.push(sinceSeq);
       if (server.authFail) {
         throw new AuthFailSPError('stub 401');
@@ -109,7 +109,10 @@ const stubProvider = (server: StubServer): SuperSyncProvider => {
         server.gapOnce = false;
         return { ops: [], hasMore: false, latestSeq: 7, gapDetected: true };
       }
-      const ops = server.ops.filter((o) => o.serverSeq > sinceSeq);
+      let ops = server.ops.filter((o) => o.serverSeq > sinceSeq);
+      if (excludeClient) {
+        ops = ops.filter((o) => o.op.clientId !== excludeClient);
+      }
       const latestSeq = ops.length ? Math.max(...ops.map((o) => o.serverSeq)) : sinceSeq;
       return { ops, hasMore: false, latestSeq };
     },
@@ -867,6 +870,163 @@ describe('sync-errors', () => {
         }
       ).entities;
       assert.equal(tags['t-remote']?.title, 'Remote Tag');
+    });
+  });
+
+  it('resyncs operations authored by the local clientId itself when excludeClient is omitted', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+
+      // Server contains an operation uploaded by LOCAL_ID (e.g. from a prior session or device)
+      const ownProjectOp = buildOperation({
+        action: addProject({
+          project: {
+            id: 'p_own',
+            title: 'Own Project',
+            taskIds: [],
+            isArchived: false,
+          } as never,
+        }),
+        clientId: LOCAL_ID,
+        vectorClock: { [LOCAL_ID]: 1 },
+        timestamp: 50,
+      });
+      server.ops = [{ serverSeq: 1, op: ownProjectOp, receivedAt: 50 }];
+
+      // Normal sync excludes LOCAL_ID
+      const normalRes = await engine.syncNow('normal-sync');
+      assert.equal(normalRes.downloaded, 0);
+
+      // Resync downloads everything including LOCAL_ID ops
+      const resyncRes = await engine.resync('full-resync');
+      assert.equal(resyncRes.downloaded, 1);
+      assert.equal(resyncRes.applied, 1);
+
+      const projects = (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      assert.equal(projects['p_own']?.title, 'Own Project');
+    });
+  });
+
+  it('resyncs full-state SYNC_IMPORT operations with plural keys (projects, tags, tasks)', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+
+      const syncImportOp: Operation = {
+        id: 'import-op-plural',
+        actionType: ActionType.LOAD_ALL_DATA,
+        opType: OpType.SyncImport,
+        entityType: 'ALL',
+        payload: {
+          projects: {
+            ids: ['p_plural'],
+            entities: {
+              p_plural: { id: 'p_plural', title: 'Plural Project' },
+            },
+          },
+          tags: {
+            ids: ['t_plural'],
+            entities: {
+              t_plural: { id: 't_plural', title: 'Plural Tag' },
+            },
+          },
+          tasks: {
+            ids: [],
+            entities: {},
+          },
+        },
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 1 },
+        timestamp: 100,
+        schemaVersion: 1,
+      };
+
+      server.ops = [{ serverSeq: 1, op: syncImportOp, receivedAt: 100 }];
+
+      const res = await engine.resync('plural-import-resync');
+      assert.equal(res.downloaded, 1);
+      assert.equal(res.applied, 1);
+
+      const projects = (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      const tags = (
+        store.state[TAG_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      assert.equal(projects['p_plural']?.title, 'Plural Project');
+      assert.equal(tags['t_plural']?.title, 'Plural Tag');
+    });
+  });
+
+  it('resyncs with flat action payloads for addProject and addTag', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+
+      const flatProjectOp: Operation = {
+        id: 'op-flat-proj',
+        actionType: addProject.type,
+        opType: OpType.Create,
+        entityType: 'PROJECT',
+        entityId: 'p_flat',
+        payload: {
+          id: 'p_flat',
+          title: 'Flat Project',
+          taskIds: [],
+        },
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 1 },
+        timestamp: 10,
+        schemaVersion: 1,
+      };
+
+      const flatTagOp: Operation = {
+        id: 'op-flat-tag',
+        actionType: addTag.type,
+        opType: OpType.Create,
+        entityType: 'TAG',
+        entityId: 't_flat',
+        payload: {
+          id: 't_flat',
+          title: 'Flat Tag',
+          taskIds: [],
+        },
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 2 },
+        timestamp: 20,
+        schemaVersion: 1,
+      };
+
+      server.ops = [
+        { serverSeq: 1, op: flatProjectOp, receivedAt: 10 },
+        { serverSeq: 2, op: flatTagOp, receivedAt: 20 },
+      ];
+
+      const res = await engine.resync('flat-payload-resync');
+      assert.equal(res.downloaded, 2);
+      assert.equal(res.applied, 2);
+
+      const projects = (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      const tags = (
+        store.state[TAG_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      assert.equal(projects['p_flat']?.title, 'Flat Project');
+      assert.equal(tags['t_flat']?.title, 'Flat Tag');
     });
   });
 });

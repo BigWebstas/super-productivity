@@ -66,12 +66,14 @@ export const { selectIds, selectEntities, selectAll } = projectAdapter.getSelect
 // DEFAULT
 // -------
 const _addInboxProjectIfNecessary = (state: ProjectState): ProjectState => {
-  if (state.ids && !(state.ids as string[]).includes(INBOX_PROJECT.id)) {
-    state = {
+  const ids = Array.isArray(state?.ids) ? (state.ids as string[]) : [];
+  const entities = state?.entities || {};
+  if (!ids.includes(INBOX_PROJECT.id)) {
+    return {
       ...state,
-      ids: [INBOX_PROJECT.id, ...state.ids] as string[],
+      ids: [INBOX_PROJECT.id, ...ids],
       entities: {
-        ...state.entities,
+        ...entities,
         [INBOX_PROJECT.id]: INBOX_PROJECT,
       },
     };
@@ -92,11 +94,12 @@ export const projectReducer = createReducer<ProjectState>(
 
   // META ACTIONS
   // ------------
-  on(loadAllData, (oldState, { appDataComplete }) =>
-    _addInboxProjectIfNecessary(
-      appDataComplete.project ? appDataComplete.project : oldState,
-    ),
-  ),
+  on(loadAllData, (oldState, { appDataComplete }) => {
+    const incoming =
+      appDataComplete.project ??
+      (appDataComplete as { projects?: ProjectState }).projects;
+    return _addInboxProjectIfNecessary(incoming ? incoming : oldState);
+  }),
 
   on(
     moveTaskInTodayList,
@@ -145,10 +148,24 @@ export const projectReducer = createReducer<ProjectState>(
 
   // Project Actions
   // ------------
-  on(addProject, (state, { project }) => projectAdapter.addOne(project, state)),
+  on(addProject, (state, action) => {
+    const project =
+      action.project ??
+      ('id' in action && typeof (action as { id?: unknown }).id === 'string'
+        ? (action as unknown as Project)
+        : undefined);
+    return project ? projectAdapter.addOne(project, state) : state;
+  }),
   on(addProjects, (state, { projects }) => projectAdapter.addMany(projects, state)),
 
-  on(updateProject, (state, { project }) => projectAdapter.updateOne(project, state)),
+  on(updateProject, (state, action) => {
+    const project =
+      action.project ??
+      ('id' in action && 'changes' in action
+        ? (action as unknown as Update<Project>)
+        : undefined);
+    return project ? projectAdapter.updateOne(project, state) : state;
+  }),
 
   // on(deleteProjects, (state, { ids }) => projectAdapter.removeMany(ids, state)),
   on(loadProjects, (state, { projects }) => projectAdapter.setAll(projects, state)),

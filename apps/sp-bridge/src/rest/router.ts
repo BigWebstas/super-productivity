@@ -383,11 +383,12 @@ export const createRouteHandler = ({
       typeof fields.projectId === 'string' && fields.projectId.trim()
         ? (fields.projectId as string)
         : INBOX_PROJECT.id;
-    const projects = (
-      store.state[PROJECT_FEATURE_NAME] as unknown as {
-        entities: Record<string, { isArchived?: boolean }>;
-      }
-    ).entities;
+    const projects =
+      (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities?: Record<string, { isArchived?: boolean }>;
+        }
+      )?.entities || {};
     const targetProject = projects[projectId];
     if (!targetProject || targetProject.isArchived) {
       return error(404, 'PROJECT_NOT_FOUND', 'Destination project not found or archived');
@@ -457,11 +458,12 @@ export const createRouteHandler = ({
           'projectId cannot be changed directly on a subtask — move its parent task instead',
         );
       }
-      const projects = (
-        store.state[PROJECT_FEATURE_NAME] as unknown as {
-          entities: Record<string, { isArchived?: boolean }>;
-        }
-      ).entities;
+      const projects =
+        (
+          store.state[PROJECT_FEATURE_NAME] as unknown as {
+            entities?: Record<string, { isArchived?: boolean }>;
+          }
+        )?.entities || {};
       const target_ = projects[target];
       if (!target_ || target_.isArchived) {
         return error(
@@ -896,10 +898,10 @@ export const createRouteHandler = ({
       let projects = Object.values(
         (
           store.state[PROJECT_FEATURE_NAME] as unknown as {
-            entities: Record<string, { title: string }>;
+            entities?: Record<string, { title?: string }>;
           }
-        ).entities,
-      );
+        )?.entities || {},
+      ).filter((p): p is { title: string } => !!p && typeof p.title === 'string');
       if (needle) {
         projects = projects.filter((p) => p.title.toLowerCase().includes(needle));
       }
@@ -912,10 +914,10 @@ export const createRouteHandler = ({
       let tags = Object.values(
         (
           store.state[TAG_FEATURE_NAME] as unknown as {
-            entities: Record<string, { title: string }>;
+            entities?: Record<string, { title?: string }>;
           }
-        ).entities,
-      );
+        )?.entities || {},
+      ).filter((t): t is { title: string } => !!t && typeof t.title === 'string');
       if (needle) {
         tags = tags.filter((t) => t.title.toLowerCase().includes(needle));
       }

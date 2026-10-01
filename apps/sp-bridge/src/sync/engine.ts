@@ -47,6 +47,7 @@ import {
   type Operation,
 } from '../../../../src/app/op-log/core/operation.types';
 import { bulkApplyOperations } from '../../../../src/app/op-log/apply/bulk-hydration.action';
+import { runWithBulkReplayFailureCollector } from '../../../../src/app/op-log/apply/bulk-replay-failure-collector';
 import {
   getEntityConfig,
   isLwwPayloadIdCanonical,
@@ -410,7 +411,7 @@ export class SyncEngine {
       this._assertEpoch(epoch);
       const response = await provider.downloadOps(
         sinceSeq,
-        store.clientId,
+        undefined,
         DOWNLOAD_PAGE_SIZE,
       );
       latestSeq = Math.max(latestSeq, response.latestSeq);
@@ -431,6 +432,9 @@ export class SyncEngine {
     }
     result.downloaded = downloaded.length;
     result.latestServerSeq = latestSeq;
+    console.log(
+      `[sync] Resync downloaded ${downloaded.length} ops (latestServerSeq=${latestSeq})`,
+    );
 
     // 3. Decrypt downloaded operations
     let decrypted: Operation[] = [];
@@ -456,6 +460,12 @@ export class SyncEngine {
         }
       }
       decrypted = decryptedOps;
+      console.log(
+        `[sync] Decrypted ${decrypted.length} ops for resync replay. First 5:`,
+        decrypted
+          .slice(0, 5)
+          .map((o) => ({ id: o.id, opType: o.opType, actionType: o.actionType })),
+      );
     }
     this._assertEpoch(epoch);
 
@@ -463,12 +473,26 @@ export class SyncEngine {
     store.reset(createInitialAgentState(), { [store.clientId]: 0 });
     if (decrypted.length) {
       this._mirrorArchiveSideEffects(decrypted);
-      store.dispatch(
-        bulkApplyOperations({
-          operations: [...decrypted],
-          localClientId: store.clientId,
-          isReplayFromEmptyBaseline: true,
-        }) as never,
+      runWithBulkReplayFailureCollector(
+        (failure) => {
+          console.error('[sync] Reducer failure during resync replay:', {
+            opId: failure.op.id,
+            actionType: failure.op.actionType,
+            opType: failure.op.opType,
+            entityType: failure.op.entityType,
+            error: failure.error.message,
+            stack: failure.error.stack,
+          });
+        },
+        () => {
+          store.dispatch(
+            bulkApplyOperations({
+              operations: [...decrypted],
+              localClientId: store.clientId,
+              isReplayFromEmptyBaseline: true,
+            }) as never,
+          );
+        },
       );
     }
     result.applied = decrypted.length;
@@ -478,14 +502,37 @@ export class SyncEngine {
     const unacceptedPending = pendingLocal.filter((op) => !serverOpIds.has(op.id));
     if (unacceptedPending.length) {
       this._mirrorArchiveSideEffects(unacceptedPending);
-      store.dispatch(
-        bulkApplyOperations({
-          operations: [...unacceptedPending],
-          localClientId: store.clientId,
-          isReplayFromEmptyBaseline: false,
-        }) as never,
+      runWithBulkReplayFailureCollector(
+        (failure) => {
+          console.error('[sync] Reducer failure during pending ops replay:', {
+            opId: failure.op.id,
+            actionType: failure.op.actionType,
+            error: failure.error.message,
+          });
+        },
+        () => {
+          store.dispatch(
+            bulkApplyOperations({
+              operations: [...unacceptedPending],
+              localClientId: store.clientId,
+              isReplayFromEmptyBaseline: false,
+            }) as never,
+          );
+        },
       );
     }
+
+    const state = store.state as unknown as {
+      project?: { ids?: string[] };
+      tag?: { ids?: string[] };
+      task?: { ids?: string[] };
+    };
+    console.log(
+      `[sync] Resync replay complete. Store entity counts: ` +
+        `projects=${state?.project?.ids?.length ?? 0}, ` +
+        `tags=${state?.tag?.ids?.length ?? 0}, ` +
+        `tasks=${state?.task?.ids?.length ?? 0}`,
+    );
 
     // 6. Fold all contributing vector clocks into store
     const allClocks = [
@@ -907,12 +954,23 @@ export class SyncEngine {
     // (noteLocalOps refuses ids with no durable op behind them).
     opLog.noteLocalOps(synthesized.map((op) => op.id));
     this._assertEpoch(epoch);
-    store.dispatch(
-      bulkApplyOperations({
-        operations: [...toApply],
-        localClientId: store.clientId,
-        isReplayFromEmptyBaseline: false,
-      }) as never,
+    runWithBulkReplayFailureCollector(
+      (failure) => {
+        console.error('[sync] Reducer failure during remote ops apply:', {
+          opId: failure.op.id,
+          actionType: failure.op.actionType,
+          error: failure.error.message,
+        });
+      },
+      () => {
+        store.dispatch(
+          bulkApplyOperations({
+            operations: [...toApply],
+            localClientId: store.clientId,
+            isReplayFromEmptyBaseline: false,
+          }) as never,
+        );
+      },
     );
     // Fold every contributing clock into the store's own: without this the
     // next LOCAL op carries a clock that omits history already applied, reads

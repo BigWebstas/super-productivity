@@ -186,9 +186,17 @@ export const menuTreeReducer = createReducer(
     ...state,
     tagTree: _deleteItemsFromTree(state.tagTree, ids, MenuTreeKind.TAG),
   })),
-  on(addTag, (state, { tag }) => {
+  on(addTag, (state, action) => {
+    const tagId =
+      action.tag?.id ??
+      ('id' in action && typeof (action as { id?: unknown }).id === 'string'
+        ? (action as { id: string }).id
+        : undefined);
+    if (!tagId) {
+      return state;
+    }
     // Only add to tree if tag doesn't already exist
-    if (_itemExistsInTree(state.tagTree, tag.id, MenuTreeKind.TAG)) {
+    if (_itemExistsInTree(state.tagTree, tagId, MenuTreeKind.TAG)) {
       return state;
     }
     return {
@@ -197,7 +205,7 @@ export const menuTreeReducer = createReducer(
         ...state.tagTree,
         {
           k: MenuTreeKind.TAG as const,
-          id: tag.id,
+          id: tagId,
         },
       ],
     };

@@ -11,7 +11,7 @@
  * This pattern keeps move operations (drag/drop, Ctrl+↑/↓) simple.
  * See: ARCHITECTURE-DECISIONS.md Decision #2
  */
-import { createEntityAdapter, EntityAdapter } from '@ngrx/entity';
+import { createEntityAdapter, EntityAdapter, Update } from '@ngrx/entity';
 import { Tag, TagState } from '../tag.model';
 import { createFeatureSelector, createReducer, createSelector, on } from '@ngrx/store';
 import { TODAY_TAG } from '../tag.const';
@@ -188,12 +188,14 @@ export const selectTagsByIds = createSelector(
 
 // TODO also add no list tag
 const _addMyDayTagIfNecessary = (state: TagState): TagState => {
-  if (state.ids && !(state.ids as string[]).includes(TODAY_TAG.id)) {
-    state = {
+  const ids = Array.isArray(state?.ids) ? (state.ids as string[]) : [];
+  const entities = state?.entities || {};
+  if (!ids.includes(TODAY_TAG.id)) {
+    return {
       ...state,
-      ids: [TODAY_TAG.id, ...state.ids] as string[],
+      ids: [TODAY_TAG.id, ...ids],
       entities: {
-        ...state.entities,
+        ...entities,
         [TODAY_TAG.id]: TODAY_TAG,
       },
     };
@@ -213,9 +215,10 @@ export const tagReducer = createReducer<TagState>(
 
   // META ACTIONS
   // ------------
-  on(loadAllData, (oldState, { appDataComplete }) =>
-    _addMyDayTagIfNecessary(appDataComplete.tag ? { ...appDataComplete.tag } : oldState),
-  ),
+  on(loadAllData, (oldState, { appDataComplete }) => {
+    const incoming = appDataComplete.tag ?? (appDataComplete as { tags?: TagState }).tags;
+    return _addMyDayTagIfNecessary(incoming ? { ...incoming } : oldState);
+  }),
 
   // NOTE: transferTask is now handled in planner-shared.reducer.ts
   // NOTE: planTaskForDay is handled in planner-shared.reducer.ts (meta-reducer with offset-aware todayStr)
@@ -349,9 +352,23 @@ export const tagReducer = createReducer<TagState>(
 
   // INTERNAL
   // --------
-  on(addTag, (state: TagState, { tag }) => tagAdapter.addOne(tag, state)),
+  on(addTag, (state: TagState, action) => {
+    const tag =
+      action.tag ??
+      ('id' in action && typeof (action as { id?: unknown }).id === 'string'
+        ? (action as unknown as Tag)
+        : undefined);
+    return tag ? tagAdapter.addOne(tag, state) : state;
+  }),
 
-  on(updateTag, (state: TagState, { tag }) => tagAdapter.updateOne(tag, state)),
+  on(updateTag, (state: TagState, action) => {
+    const tag =
+      action.tag ??
+      ('id' in action && 'changes' in action
+        ? (action as unknown as Update<Tag>)
+        : undefined);
+    return tag ? tagAdapter.updateOne(tag, state) : state;
+  }),
 
   on(deleteTag, (state: TagState, { id }) => tagAdapter.removeOne(id, state)),
 

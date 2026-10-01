@@ -15,6 +15,7 @@
  * op replay as full state rather than as an inert no-op.
  */
 import { bulkApplyOperations } from '../../../../src/app/op-log/apply/bulk-hydration.action';
+import { runWithBulkReplayFailureCollector } from '../../../../src/app/op-log/apply/bulk-replay-failure-collector';
 import type { Operation } from '../../../../src/app/op-log/core/operation.types';
 import type { AgentStore } from '../store/agent-store';
 
@@ -37,12 +38,23 @@ export const hydrateFromOpLog = (
   }
 
   const before = store.state;
-  store.dispatch(
-    bulkApplyOperations({
-      operations: [...ops],
-      localClientId: store.clientId,
-      isReplayFromEmptyBaseline: true,
-    }),
+  runWithBulkReplayFailureCollector(
+    (failure) => {
+      console.error('[hydrate] Reducer failure during boot hydration:', {
+        opId: failure.op.id,
+        actionType: failure.op.actionType,
+        error: failure.error.message,
+      });
+    },
+    () => {
+      store.dispatch(
+        bulkApplyOperations({
+          operations: [...ops],
+          localClientId: store.clientId,
+          isReplayFromEmptyBaseline: true,
+        }),
+      );
+    },
   );
 
   // Fold every contributing client's clock into the store, so the first local
