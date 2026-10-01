@@ -1,0 +1,97 @@
+name: SP Bridge Sync E2E
+
+# Two-bridge sync against a real SuperSync server: replication plus
+# concurrent-edit and archive convergence, all E2EE-encrypted.
+#
+# Runs on ubuntu-latest (not windows-latest like the installer job): it needs
+# the repo's TEST_MODE compose stack, and Docker on Windows runners cannot
+# run it. The bridge itself is plain Node, so the platform skew proves
+# nothing either way — the installer job already proves the Windows bundle
+# loads.
+
+on:
+  push:
+    branches:
+      - sp-bridge
+    paths:
+      - 'apps/sp-bridge/**'
+      - '.github/workflows/sp-bridge-sync-e2e.yml'
+  pull_request:
+    paths:
+      - 'apps/sp-bridge/**'
+      - '.github/workflows/sp-bridge-sync-e2e.yml'
+  # Lets a maintainer kick a run without touching a file.
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes an in-flight run irrelevant (the fixed 1901 port means
+  # only one runs at a time regardless).
+  group: sp-bridge-sync-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  two-bridges:
+    name: Two bridges, one account
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/sp-bridge/package-lock.json
+
+      # Same reasoning as the installer job: the bridge type-checks and
+      # bundles the repo's own sources, so it needs the root install first.
+      - name: Install repo dependencies
+        working-directory: .
+        run: npm ci --ignore-scripts
+
+      - name: Generate env placeholder
+        working-directory: .
+        run: node tools/load-env.js --ensure
+
+      - name: Install agent tooling
+        working-directory: apps/sp-bridge
+        run: npm ci
+
+      - name: Start TEST_MODE SuperSync server
+        # Retry to survive transient Docker Hub pull timeouts / rate limits.
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 12
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            docker compose -f docker-compose.yaml -f docker-compose.supersync.yaml up -d --build supersync
+            echo "Waiting for SuperSync server..."
+            timeout 240 bash -c 'until curl -s http://localhost:1901/health > /dev/null 2>&1; do sleep 1; done'
+            echo "SuperSync server ready!"
+
+      - name: Run two-bridge sync E2E
+        working-directory: apps/sp-bridge
+        env:
+          SP_BRIDGE_E2E_BASE_URL: http://127.0.0.1:1901
+        run: npm run e2e:supersync
+
+      - name: Print server logs on failure
+        if: ${{ failure() }}
+        run: |
+          # Bounded on purpose: development-mode Prisma query noise would
+          # otherwise push the actual failure out of the readable log tail.
+          docker compose -f docker-compose.yaml -f docker-compose.supersync.yaml logs --tail=200 supersync || true
+
+      - name: Stop Docker services
+        if: always()
+        run: |
+          docker compose -f docker-compose.yaml -f docker-compose.supersync.yaml down db supersync

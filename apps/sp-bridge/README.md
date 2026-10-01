@@ -371,13 +371,17 @@ caches, and breaks through failure backoff immediately.
 
 ### Sync E2E
 
-Needs the TEST_MODE server (loopback-bound, rate limits off):
+Needs the TEST_MODE server (loopback-bound, rate limits off). CI runs this on
+every push to `sp-bridge` touching this directory
+([`sp-bridge-sync-e2e.yml`](../../.github/workflows/sp-bridge-sync-e2e.yml),
+ubuntu-latest — the installer job's Windows runners cannot host the compose
+stack):
 
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose.supersync.yaml up -d supersync
 until curl -s http://localhost:1901/health > /dev/null; do sleep 1; done
 cd apps/sp-bridge
-node scripts/run-ts.mjs e2e/two-bridges.e2e.ts
+npm run e2e:supersync
 ```
 
 ### Known scope risk

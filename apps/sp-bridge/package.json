@@ -19,6 +19,7 @@
   "scripts": {
     "spike": "node scripts/run-ts.mjs spike/headless-reducers.spike.ts",
     "test": "node scripts/run-ts.mjs src/test/run-all.ts",
+    "e2e:supersync": "node scripts/run-ts.mjs e2e/two-bridges.e2e.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node scripts/run-ts.mjs src/main.ts",
     "icon": "node scripts/make-icon.mjs",
