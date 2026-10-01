@@ -974,7 +974,7 @@ describe('sync-errors', () => {
 
       const flatProjectOp: Operation = {
         id: 'op-flat-proj',
-        actionType: addProject.type,
+        actionType: ActionType.PROJECT_ADD,
         opType: OpType.Create,
         entityType: 'PROJECT',
         entityId: 'p_flat',
@@ -991,7 +991,7 @@ describe('sync-errors', () => {
 
       const flatTagOp: Operation = {
         id: 'op-flat-tag',
-        actionType: addTag.type,
+        actionType: ActionType.TAG_ADD,
         opType: OpType.Create,
         entityType: 'TAG',
         entityId: 't_flat',
