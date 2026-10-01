@@ -1,23 +1,23 @@
-name: SP Sync Agent (Windows installer)
+name: SP Bridge (Windows installer)
 
-# Builds the SP Sync Agent desktop installer from apps/sp-sync-agent.
+# Builds the SP Bridge desktop installer from apps/sp-bridge.
 #
 # Scope is deliberately narrow: this workflow exists to produce a Windows
 # installer for the agent, not to validate the Super Productivity app. It runs
 # the agent's own gates (typecheck, tests, bundle) first, because every one of
 # them has caught a real defect that a green build did not — see the "Traps"
-# section of apps/sp-sync-agent/README.md.
+# section of apps/sp-bridge/README.md.
 
 on:
   push:
     branches:
       - sp-bridge
     paths:
-      - 'apps/sp-sync-agent/**'
+      - 'apps/sp-bridge/**'
       - '.github/workflows/sp-bridge-windows.yml'
   pull_request:
     paths:
-      - 'apps/sp-sync-agent/**'
+      - 'apps/sp-bridge/**'
       - '.github/workflows/sp-bridge-windows.yml'
   # Lets a maintainer kick a build without touching a file.
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: apps/sp-sync-agent
+        working-directory: apps/sp-bridge
 
     steps:
       - name: Checkout
@@ -53,7 +53,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            apps/sp-sync-agent/package-lock.json
+            apps/sp-bridge/package-lock.json
 
       # The repo install comes FIRST and is not optional.
       #
@@ -152,7 +152,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: sp-sync-agent-windows-x64
-          path: apps/sp-sync-agent/release/*.exe
+          name: sp-bridge-windows-x64
+          path: apps/sp-bridge/release/*.exe
           if-no-files-found: error
           retention-days: 30

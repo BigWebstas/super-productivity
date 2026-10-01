@@ -138,7 +138,9 @@ try {
 // Browser globals some transitively imported app modules read at load time.
 require(resolve(appDir, 'src/platform/headless-globals.ts')).installHeadlessGlobals();
 require(resolve(appDir, 'src/platform/agent-logging.ts')).configureAgentLogging(
-  process.env.SP_AGENT_LOG_LEVEL === 'info' ? 'info' : 'error',
+  (process.env.SP_BRIDGE_LOG_LEVEL ?? process.env.SP_AGENT_LOG_LEVEL) === 'info'
+    ? 'info'
+    : 'error',
 );
 
 try {

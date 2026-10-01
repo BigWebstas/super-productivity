@@ -4,11 +4,15 @@
  * Wires the pieces in dependency order and starts the REST API:
  *   headless globals → logging → op log → store (hydrated) → REST server
  *
- * The data directory defaults to `%APPDATA%/sp-sync-agent` on Windows and
- * `~/.local/share/sp-sync-agent` elsewhere (see ./platform/data-dir).
+ * The data directory defaults to `%APPDATA%/sp-bridge` on Windows and
+ * `~/.local/share/sp-bridge` elsewhere (see ./platform/data-dir).
  */
 import { basename, resolve } from 'node:path';
-import { defaultDataDir } from './platform/data-dir';
+import {
+  defaultDataDir,
+  isExplicitDataDir,
+  migrateLegacyDataDir,
+} from './platform/data-dir';
 import { installHeadlessGlobals } from './platform/headless-globals';
 import { configureAgentLogging } from './platform/agent-logging';
 import { generateClientId } from '../../../src/app/core/util/generate-client-id';
@@ -38,7 +42,15 @@ export const startAgent = async (
   port: number = LOCAL_REST_API_PORT,
 ): Promise<StartedAgent> => {
   installHeadlessGlobals();
-  configureAgentLogging(process.env.SP_AGENT_LOG_LEVEL === 'info' ? 'info' : 'error');
+  const logLevelEnv = process.env.SP_BRIDGE_LOG_LEVEL ?? process.env.SP_AGENT_LOG_LEVEL;
+  configureAgentLogging(logLevelEnv === 'info' ? 'info' : 'error');
+
+  // Runs before anything reads state when the caller uses the default
+  // directory (an explicit directory opts out — see data-dir.ts). The logger
+  // already migrated at import time; this second call is a no-op for it.
+  if (!isExplicitDataDir()) {
+    migrateLegacyDataDir(defaultDataDir());
+  }
 
   const opLog = OpLogStore.open(dataDir, {}, generateClientId);
   const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
@@ -54,7 +66,7 @@ export const startAgent = async (
       opLog.appendSync(ops);
     } catch (error) {
       console.error(
-        '[agent] FAILED TO PERSIST OPERATIONS — this state change has no durable ' +
+        '[bridge] FAILED TO PERSIST OPERATIONS — this state change has no durable ' +
           'operation behind it and will diverge on the next sync:',
         error,
       );
@@ -79,12 +91,12 @@ export const startAgent = async (
   const address = server.address();
 
   console.log(
-    `[agent] data dir   ${resolve(dataDir)}\n` +
-      `[agent] client id  ${opLog.clientId}\n` +
-      `[agent] replayed   ${hydrated.applied} operation(s)\n` +
-      `[agent] listening  http://${address?.host}:${address?.port}\n` +
-      `[agent] token      ${server.token}\n` +
-      `[agent] sync       not enabled yet — see the roadmap in the README`,
+    `[bridge] data dir   ${resolve(dataDir)}\n` +
+      `[bridge] client id  ${opLog.clientId}\n` +
+      `[bridge] replayed   ${hydrated.applied} operation(s)\n` +
+      `[bridge] listening  http://${address?.host}:${address?.port}\n` +
+      `[bridge] token      ${server.token}\n` +
+      `[bridge] sync       not enabled yet — see the roadmap in the README`,
   );
 
   return {
@@ -115,11 +127,11 @@ const isEntryPoint = (): boolean => {
 };
 
 if (isEntryPoint()) {
-  const port = process.env.SP_AGENT_PORT
-    ? Number.parseInt(process.env.SP_AGENT_PORT, 10)
-    : LOCAL_REST_API_PORT;
-  startAgent(process.env.SP_AGENT_DATA_DIR, port).catch((error: unknown) => {
-    console.error('[agent] Failed to start:', error);
+  const portEnv = process.env.SP_BRIDGE_PORT ?? process.env.SP_AGENT_PORT;
+  const port = portEnv ? Number.parseInt(portEnv, 10) : LOCAL_REST_API_PORT;
+  const dataDir = process.env.SP_BRIDGE_DATA_DIR ?? process.env.SP_AGENT_DATA_DIR;
+  startAgent(dataDir, port).catch((error: unknown) => {
+    console.error('[bridge] Failed to start:', error);
     process.exitCode = 1;
   });
 }

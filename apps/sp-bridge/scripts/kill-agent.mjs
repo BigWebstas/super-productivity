@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Kills a runaway SP Sync Agent, including every process it spawned.
+ * Kills a runaway SP Bridge, including every process it spawned.
  *
  * Why a tree kill and not a single PID: the agent is an Electron app, so the
  * window you see in Task Manager is a launcher that owns child renderer, GPU
@@ -41,7 +41,7 @@ const dryRun = hasFlag('--dry-run');
  * executes plain Node and so is indistinguishable from any other node process:
  *   npm run kill -- --pattern 'dist/main.js'
  */
-const pattern = flagValue('--pattern', 'SP Sync Agent|sp-sync-agent');
+const pattern = flagValue('--pattern', 'SP Bridge|sp-bridge');
 const isWindows = process.platform === 'win32';
 
 const run = (cmd, args) =>

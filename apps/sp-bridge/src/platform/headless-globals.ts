@@ -64,6 +64,6 @@ export const installHeadlessGlobals = (): void => {
     g['localStorage'] = createMemoryStorage();
   }
   if (!isAlreadyDefined('navigator')) {
-    g['navigator'] = { userAgent: 'sp-sync-agent', language: 'en-US' };
+    g['navigator'] = { userAgent: 'sp-bridge', language: 'en-US' };
   }
 };

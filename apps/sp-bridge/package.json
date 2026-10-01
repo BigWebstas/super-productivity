@@ -1,5 +1,5 @@
 {
-  "name": "sp-sync-agent",
+  "name": "sp-bridge",
   "version": "0.1.0",
   "private": true,
   "description": "Small headless agent that serves Super Productivity's local REST API and syncs to a SuperSync server",

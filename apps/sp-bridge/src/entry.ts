@@ -4,7 +4,7 @@
  * Import order here is load-bearing and must not be "tidied":
  *
  *  1. `./platform/agent-log-file` — points the console at
- *     `<dataDir>/agent.log` before anything can throw, so a failure during
+ *     `<dataDir>/bridge.log` before anything can throw, so a failure during
  *     module evaluation is recorded rather than lost.
  *
  *  2. `./platform/headless-globals-install` — app modules read `window` at

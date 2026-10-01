@@ -1,4 +1,4 @@
-# electron-builder configuration for the SP Sync Agent desktop shell.
+# electron-builder configuration for the SP Bridge desktop shell.
 #
 # Kept out of package.json so the packaging contract is readable in one place
 # and so the agent's package.json stays a plain dependency manifest.
@@ -15,8 +15,8 @@
 # package. `dist/main.js` (the plain-Node bundle) is deliberately not packaged;
 # the installer only needs the Electron shell.
 
-appId: com.bigwebstas.sp-sync-agent
-productName: SP Sync Agent
+appId: com.bigwebstas.sp-bridge
+productName: SP Bridge
 copyright: MIT
 
 directories:
@@ -45,6 +45,6 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: SP Sync Agent
+  shortcutName: SP Bridge
 
 publish: null

@@ -29,7 +29,7 @@ import type { Operation } from '../../../../src/app/op-log/core/operation.types'
  * rejection rather than as the real cause.
  */
 const withTempDir = async (fn: (dir: string) => void | Promise<void>): Promise<void> => {
-  const dir = mkdtempSync(join(tmpdir(), 'sp-agent-oplog-'));
+  const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-oplog-'));
   try {
     await fn(dir);
   } finally {

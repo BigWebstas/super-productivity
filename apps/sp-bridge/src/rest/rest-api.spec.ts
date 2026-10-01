@@ -22,7 +22,7 @@ const withServer = async (
     store: AgentStore;
   }) => Promise<void>,
 ): Promise<void> => {
-  const dir = mkdtempSync(join(tmpdir(), 'sp-agent-rest-'));
+  const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-rest-'));
   const store = new AgentStore('E_aaaaaa');
   const server = new LocalRestApiServer({
     dataDir: dir,

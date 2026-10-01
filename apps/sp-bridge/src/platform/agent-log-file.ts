@@ -21,7 +21,7 @@
  */
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { AGENT_LOG_FILENAME, defaultDataDir } from './data-dir';
+import { BRIDGE_LOG_FILENAME, defaultDataDir, migrateLegacyDataDir } from './data-dir';
 
 /** Rotate once past this, keeping exactly one previous file. */
 const MAX_LOG_BYTES = 1024 * 1024;
@@ -77,7 +77,7 @@ const tee =
   };
 
 /**
- * Points the console at `<dataDir>/agent.log`.
+ * Points the console at `<dataDir>/bridge.log`.
  *
  * Idempotent, and safe to call when the data dir cannot be created: it then
  * leaves the console untouched and reports a null path.
@@ -86,9 +86,12 @@ export const installAgentLogFile = (dataDir: string = defaultDataDir()): void =>
   if (logFilePath) {
     return;
   }
+  // Migrate the pre-rename directory before creating anything, so the log
+  // file lands next to the migrated op log rather than beside a fresh one.
+  migrateLegacyDataDir(dataDir);
   try {
     mkdirSync(dataDir, { recursive: true });
-    const path = join(dataDir, AGENT_LOG_FILENAME);
+    const path = join(dataDir, BRIDGE_LOG_FILENAME);
     rotateIfOversized(path);
     logFilePath = path;
   } catch {

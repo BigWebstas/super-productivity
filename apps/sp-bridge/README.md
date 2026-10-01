@@ -1,8 +1,8 @@
-# sp-sync-agent
+# sp-bridge
 
-A small headless Windows agent that serves **Super Productivity's local REST API**
-and syncs to a **SuperSync server**, with data that is interchangeable with the
-real Super Productivity clients.
+**SP Bridge** — a small headless Windows agent that serves **Super Productivity's
+local REST API** and syncs to a **SuperSync server**, with data that is
+interchangeable with the real Super Productivity clients.
 
 > **Status: runs, persists, and serves the API. Sync not yet enabled.** The
 > agent boots, replays its operation log, serves the local REST API, and writes
@@ -36,7 +36,7 @@ putting two Angular copies on one type path. The last entry in
 
 ```bash
 npm ci --ignore-scripts          # repo root: the app dependencies
-cd apps/sp-sync-agent && npm ci  # the agent's build tooling
+cd apps/sp-bridge && npm ci  # the agent's build tooling
 ```
 
 | Concern                | Reused from Super Productivity                                       |
@@ -82,7 +82,7 @@ in the chain, so the ordering constraints the registry documents still hold.
 Run them:
 
 ```bash
-cd apps/sp-sync-agent
+cd apps/sp-bridge
 node scripts/run-ts.mjs spike/headless-reducers.spike.ts   # feasibility
 node scripts/run-ts.mjs src/test/run-all.ts                # 59 assertions
 ../../node_modules/.bin/tsc -p tsconfig.json --noEmit       # 0 errors
@@ -96,7 +96,7 @@ runtime rather than as a build error — that is how the invented
 ## Building
 
 ```bash
-cd apps/sp-sync-agent
+cd apps/sp-bridge
 npm run build          # dist/main.js + dist/electron/main.js
 npm run build:min      # minified (+ sourcemap)
 npm run package        # bundle + electron-builder → release/*.exe
@@ -142,15 +142,16 @@ The installer is **unsigned**, so Windows SmartScreen will warn on first run.
 That is expected for a locally built artifact; a certificate is needed before
 handing it to anyone else.
 
-#### Logs: `<dataDir>\agent.log`
+#### Logs: `<dataDir>\bridge.log`
 
-The agent has no terminal of its own, and a GUI Electron app on Windows has no
+The bridge has no terminal of its own, and a GUI Electron app on Windows has no
 attached console, so every diagnostic would otherwise be discarded. The first
-import in each entry points the console at **`agent.log`** in the data
-directory (`%APPDATA%\sp-sync-agent` by default, or wherever `SP_AGENT_DATA_DIR`
+import in each entry points the console at **`bridge.log`** in the data
+directory (`%APPDATA%\sp-bridge` by default, or wherever `SP_BRIDGE_DATA_DIR`
 points), and `uncaughtException` / `unhandledRejection` are recorded there. The
 error dialog names the file. This is the first place to look when the app does
-not appear to launch.
+not appear to launch. (Pre-rename installs used `agent.log` under
+`sp-sync-agent`; both are moved over automatically — see below.)
 
 GitHub Actions builds it on every push to `sp-bridge` that touches this
 directory: [`.github/workflows/sp-bridge-windows.yml`](../../.github/workflows/sp-bridge-windows.yml).
@@ -195,8 +196,8 @@ entry, so the bundle was the thing that caught it.
 ## Running it
 
 ```bash
-cd apps/sp-sync-agent
-SP_AGENT_PORT=3976 node scripts/run-ts.mjs src/main.ts
+cd apps/sp-bridge
+SP_BRIDGE_PORT=3976 node scripts/run-ts.mjs src/main.ts
 ```
 
 It prints the data directory, client id, replayed operation count, bound address
@@ -211,10 +212,17 @@ curl -s -X POST localhost:3976/tasks \
 curl -s 'localhost:3976/tasks' -H "Authorization: Bearer $TOKEN"
 ```
 
-`SP_AGENT_DATA_DIR` overrides the data directory (default
-`%APPDATA%/sp-sync-agent` on Windows, `~/.local/share/sp-sync-agent` elsewhere).
+`SP_BRIDGE_DATA_DIR` overrides the data directory (default
+`%APPDATA%/sp-bridge` on Windows, `~/.local/share/sp-bridge` elsewhere).
 It is deliberately NOT Super Productivity's own profile: the two are separate
-clients that happen to speak the same protocol.
+clients that happen to speak the same protocol. The pre-rename `SP_AGENT_*`
+environment names are still honoured as a fallback.
+
+Previously this project was named sp-sync-agent (directory, data directory
+and `SP_AGENT_*` variables included). On first start with the new default, an
+existing `sp-sync-agent` data directory is moved to `sp-bridge` intact —
+client id, op log, token and log file — so no history or identity is lost. An
+explicit `SP_BRIDGE_DATA_DIR` disables the migration.
 
 Verified end to end: create a task and a subtask over HTTP, kill the process,
 restart it — both tasks come back, the parent's `subTaskIds` link is rebuilt by
@@ -260,11 +268,11 @@ therefore transpiles with the TypeScript compiler API and resolves the
 workspace path aliases itself. Once the workspace install is repaired this can be
 replaced with `vitest`.
 
-For the same reason the agent declares its own dependencies in
-`apps/sp-sync-agent/package.json` (`@ngrx/store`, `@angular/core`, …) rather than
-relying on the root install. **No root dependency was added** — per
-`AGENTS.md`, these are all already root dependencies; they are simply not
-installed here.
+The manifest carries build and packaging tooling only (see
+[Dependencies](#dependencies) above): the `node_modules` gaps the runner works
+around are a broken-workspace problem, not a missing-manifest one, so working
+around them here rather than re-declaring the app's dependencies keeps the
+single-copy invariant.
 
 ## Roadmap
 
@@ -384,7 +392,7 @@ error, which is the dangerous kind:
     had simply never been given them.
 - **No logs, which is why the above took a day to find.** Every diagnostic goes
   through `console`, and a Windows GUI process has no console to go to. The
-  first import in each entry now tees it to `<dataDir>/agent.log`, and
+  first import in each entry now tees it to `<dataDir>/bridge.log`, and
   `uncaughtException` / `unhandledRejection` are recorded. Verified by rebuilding
   with the shim removed and reading the resulting stack trace out of the file.
 

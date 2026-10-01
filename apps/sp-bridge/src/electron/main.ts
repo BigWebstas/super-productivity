@@ -30,7 +30,7 @@
 // and no data directory — the app simply never appears to launch.
 //  0. `../platform/agent-log-file` — FIRST, before anything that can throw, so
 //     that a failure while evaluating the modules below is written to
-//     agent.log instead of vanishing into a Windows GUI process with no console.
+//     bridge.log instead of vanishing into a Windows GUI process with no console.
 //     Without it this app is undebuggable: it dies above app.whenReady() and
 //     leaves no window, tray, dialog or data dir behind.
 import '../platform/agent-log-file';
@@ -86,7 +86,7 @@ const STATUS_HTML = (
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
-    <title>SP Sync Agent</title>
+    <title>SP Bridge</title>
     <style>
       body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 20px; }
       h1 { font-size: 16px; margin: 0 0 4px; }
@@ -99,7 +99,7 @@ const STATUS_HTML = (
     </style>
   </head>
   <body>
-    <h1>SP Sync Agent</h1>
+    <h1>SP Bridge</h1>
     <p class="sub">Serving the Super Productivity local REST API.</p>
     <dl>
       <dt>API</dt><dd>${escapeHtml(restUrl)}</dd>
@@ -134,7 +134,7 @@ const showStatusWindow = (): void => {
   statusWindow = new BrowserWindow({
     width: 560,
     height: 420,
-    title: 'SP Sync Agent',
+    title: 'SP Bridge',
     webPreferences: {
       // The window only renders a local string; no remote content, no Node.
       nodeIntegration: false,
@@ -158,7 +158,7 @@ const buildTray = (): void => {
   const iconPath = join(__dirname, 'icon.png');
   const image = nativeImage.createFromPath(iconPath);
   tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
-  tray.setToolTip('SP Sync Agent');
+  tray.setToolTip('SP Bridge');
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Show status', click: showStatusWindow },
@@ -197,16 +197,16 @@ const buildTray = (): void => {
 app.on('second-instance', showStatusWindow);
 
 // Anything that escapes the try/catch below used to be invisible: no window, no
-// tray, no dialog, no log. The console is teed to agent.log (imported first
+// tray, no dialog, no log. The console is teed to bridge.log (imported first
 // above), so recording it here is enough to make the failure diagnosable.
 process.on('uncaughtException', (error: Error) => {
-  console.error('[agent] Uncaught exception:', error);
+  console.error('[bridge] Uncaught exception:', error);
   dialogError(error);
   app.quit();
 });
 
 process.on('unhandledRejection', (reason: unknown) => {
-  console.error('[agent] Unhandled promise rejection:', reason);
+  console.error('[bridge] Unhandled promise rejection:', reason);
 });
 
 app.whenReady().then(async () => {
@@ -253,7 +253,7 @@ app.on('before-quit', (event) => {
 const dialogError = (error: unknown): void => {
   const logPath = agentLogPath();
   dialog.showErrorBox(
-    'SP Sync Agent failed to start',
+    'SP Bridge failed to start',
     [
       error instanceof Error ? error.message : String(error),
       logPath ? `\n\nA log was written to:\n${logPath}` : '',
