@@ -4,11 +4,11 @@
 local REST API** and syncs to a **SuperSync server**, with data that is
 interchangeable with the real Super Productivity clients.
 
-> **Status: runs, persists, and serves the API. Sync not yet enabled.** The
-> agent boots, replays its operation log, serves the local REST API, and writes
-> every mutation to disk as a Super Productivity–compatible operation. The
-> SuperSync transport, conflict handling and the `/focus` timer are the
-> remaining work, listed in [Roadmap](#roadmap).
+> **Status: syncs.** The bridge boots, replays its operation log, serves the
+> local REST API, writes every mutation to disk as a Super Productivity–compatible
+> operation, and exchanges operations with a SuperSync server (E2EE, LWW
+> conflicts included). The `/focus` timer is the remaining work, listed in
+> [Roadmap](#roadmap).
 
 ## The approach
 
@@ -84,7 +84,7 @@ Run them:
 ```bash
 cd apps/sp-bridge
 node scripts/run-ts.mjs spike/headless-reducers.spike.ts   # feasibility
-node scripts/run-ts.mjs src/test/run-all.ts                # 59 assertions
+node scripts/run-ts.mjs src/test/run-all.ts                # 76 assertions
 ../../node_modules/.bin/tsc -p tsconfig.json --noEmit       # 0 errors
 ```
 
@@ -247,6 +247,13 @@ src/
     operation-factory.ts persistent action → sync Operation
     op-log-store.ts      durable append-only log (JSONL) + meta
     hydrate.ts           replay the log through the app's bulk-apply action
+  sync/
+    sync-config.ts       sync.json + SP_BRIDGE_SYNC_* env overrides
+    credential-store.ts  file-backed SuperSync credential port
+    seq-storage.ts       file-backed lastServerSeq port
+    provider.ts          SuperSyncProvider wiring for plain Node
+    crypto.ts            op payload E2EE envelope (encrypt/decrypt batch)
+    engine.ts            download → resolve → apply → upload cycles + LWW
   rest/
     access-token.ts      token generation, persistence, revocation
     server.ts            HTTP transport: auth, Host/Origin checks, limits
@@ -276,7 +283,7 @@ single-copy invariant.
 
 ## Roadmap
 
-Ordered by dependency. Each step is independently testable. Steps 1–2 are done.
+Ordered by dependency. Each step is independently testable. Steps 1–4 are done.
 
 1. ~~**Durable op log**~~ — append-only JSONL + `meta.json`, persisting
    `clientId` and the vector clock across restarts, replayed on boot. Compaction
@@ -287,11 +294,19 @@ Ordered by dependency. Each step is independently testable. Steps 1–2 are done
    tag, status and task-control routes. Two gaps, both explicit rather than
    faked: `/focus` returns `501` (no timer yet) and `?source=archived` returns an
    empty set (no archive store yet) instead of quietly returning active tasks.
-3. **SuperSync transport** — wire `SuperSyncProvider` with a file-backed
-   credential store and a file-backed `storage` port (the provider is
-   host-agnostic by design), plus E2EE via `@sp/sync-core`.
-4. **Conflict handling** — `@sp/sync-core` gives the algorithms; the agent needs
-   the orchestration the app does in `conflict-resolution.service.ts`.
+3. ~~**SuperSync transport**~~ — `SuperSyncProvider` with a file-backed
+   credential store (`sync.json`), a file-backed `storage` port
+   (`sync-state.json`), and E2EE via `@sp/sync-core`. Download → resolve →
+   apply → upload cycles run on a timer plus a debounced post-change trigger;
+   `GET /sync/status` and `POST /sync/trigger` expose them. Proven against a
+   real server: `e2e/two-bridges.e2e.ts` replicates A → server → B and
+   converges concurrent edits (see below).
+4. ~~**Conflict handling**~~ — detection mirrors the app (per-entity frontier,
+   concurrent local ops, archive/delete-wins, crossing reconstruction) over
+   `@sp/sync-core`'s LWW planner. Local winners synthesize a dominating LWW
+   update in the app's exact wire shape; losers leave the pending set but stay
+   in history. Server-side `CONFLICT_*` rejections run a bounded extra
+   download → resolve → upload round.
 5. **Focus/timer slice** — `/focus` and `/status` timing need focus-mode state
    and a ticker.
 6. **Archive store** — `POST /tasks/:id/archive` and `?source=archived`.
@@ -300,13 +315,48 @@ Ordered by dependency. Each step is independently testable. Steps 1–2 are done
    and an electron-builder NSIS config built by CI. Still open: a settings UI for
    the SuperSync URL / token / master password, and start-on-login.
 
+### Sync configuration
+
+`sync.json` in the data directory (created by hand or by provisioning):
+
+```json
+{
+  "baseUrl": "https://sync.super-productivity.com",
+  "accessToken": "<account token>",
+  "encryptKey": "<E2EE secret, same semantics as the desktop client>",
+  "isEncryptionEnabled": true,
+  "syncIntervalMs": 60000,
+  "syncOnLocalChange": true
+}
+```
+
+Without an `accessToken` the bridge is a local-only REST server. Every field
+has an `SP_BRIDGE_SYNC_*` environment override (`SP_BRIDGE_SYNC_BASE_URL`,
+`SP_BRIDGE_SYNC_ACCESS_TOKEN`, `SP_BRIDGE_SYNC_MASTER_PASSWORD`, …); a
+`masterPassword` (file or env) is promoted to a persisted `encryptKey` once
+and never written itself. Encryption is mandatory — without a key the engine
+refuses to run rather than pushing plaintext into an encrypted dataset.
+
+### Sync E2E
+
+Needs the TEST_MODE server (loopback-bound, rate limits off):
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.supersync.yaml up -d supersync
+until curl -s http://localhost:1901/health > /dev/null; do sleep 1; done
+cd apps/sp-bridge
+node scripts/run-ts.mjs e2e/two-bridges.e2e.ts
+```
+
 ### Known scope risk
 
 Full interop means the agent must apply remote operations for **every** entity
 type a real client can sync, not just tasks/projects/tags — archiving, time
 tracking and global config all carry state the agent would otherwise silently
-drop, and a dropped op is divergence. Step 3 is where this becomes concrete;
-entity coverage should be settled before the transport is considered done.
+drop, and a dropped op is divergence. ~~Step 3 is where this becomes concrete;
+entity coverage should be settled before the transport is considered done.~~
+Settled: the agent reduces all 18 registry entity types plus layout (see
+`src/store/agent-state.ts`), so no remote op drops on a missing slice.
 
 ### Traps hit while building this
 
@@ -400,3 +450,16 @@ error, which is the dangerous kind:
   not that it _launches_. Both bugs above were invisible to every gate in the
   workflow. Anything asserted only by `electron-builder` needs a check that
   actually loads the built bundle.
+
+- **Downloaded ops re-entering the upload stream.** The op log interleaves
+  local and downloaded remote ops, so an `uploadedCount` prefix cursor served
+  the other client's ops back to the server, which rejects them with
+  `INVALID_CLIENT_ID` (op.clientId ≠ request clientId). Pending upload is now
+  a persisted id SET containing only locally-produced ops; remote applies
+  never enter it.
+- **The server rejects concurrent ops, so losers need compensation.** Leaving
+  a `CONFLICT_CONCURRENT`-rejected op pending re-uploads (and re-rejects) it
+  on every cycle — and under the old prefix cursor it wedged everything behind
+  it. Local winners now synthesize a dominating LWW update in the app's exact
+  wire shape; losers leave the pending set but stay in history. Found by the
+  two-bridge E2E, which diverged before this existed.

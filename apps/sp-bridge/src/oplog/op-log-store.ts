@@ -47,8 +47,14 @@ const META_FILE = 'meta.json';
 interface PersistedMeta {
   clientId: string;
   vectorClock: Record<string, number>;
-  /** Number of ops at the head of the log already accepted by the server. */
-  uploadedCount: number;
+  /**
+   * Ids of locally-produced ops the server has not accepted yet, in log
+   * order. A SET (not a prefix cursor) because the log interleaves local ops
+   * with downloaded remote ops, which must never enter the upload stream —
+   * re-uploading another client's op fails with INVALID_CLIENT_ID and, worse,
+   * a rejected local op would wedge every op behind it under a prefix cursor.
+   */
+  pendingLocalOpIds: string[];
 }
 
 export interface OpLogOpenOptions {
@@ -102,6 +108,9 @@ export class OpLogStore {
     const meta = OpLogStore._readMeta(metaPath, options.clientId, generateClientId);
     const ops = OpLogStore._readOps(opsPath);
     const store = new OpLogStore(dataDir, meta, ops);
+    // Stale pending ids (log truncated by hand, torn write) can never upload;
+    // drop them rather than retrying ghosts forever.
+    store._reconcilePending();
     store._writeMeta();
     return store;
   }
@@ -129,7 +138,9 @@ export class OpLogStore {
           return {
             clientId: parsed.clientId,
             vectorClock: parsed.vectorClock ?? { [parsed.clientId]: 0 },
-            uploadedCount: parsed.uploadedCount ?? 0,
+            pendingLocalOpIds: Array.isArray(parsed.pendingLocalOpIds)
+              ? parsed.pendingLocalOpIds.filter((id) => typeof id === 'string')
+              : [],
           };
         }
       } catch (error) {
@@ -137,7 +148,7 @@ export class OpLogStore {
       }
     }
     const clientId = fallbackClientId ?? generateClientId();
-    return { clientId, vectorClock: { [clientId]: 0 }, uploadedCount: 0 };
+    return { clientId, vectorClock: { [clientId]: 0 }, pendingLocalOpIds: [] };
   }
 
   /**
@@ -286,25 +297,71 @@ export class OpLogStore {
     this.appendSync(ops);
   }
 
-  /** Operations the server has not accepted yet, oldest first. */
+  /** Locally-produced operations the server has not accepted yet, log order. */
   pendingUpload(): Operation[] {
-    return this._ops.slice(this._meta.uploadedCount);
+    const pending = new Set(this._meta.pendingLocalOpIds);
+    return this._ops.filter((op) => pending.has(op.id));
   }
 
   /**
-   * Advances the upload cursor to `count`, an ABSOLUTE op count (not a delta).
-   *
-   * The cursor is a count rather than an op id so it stays valid when the same
-   * operation is re-uploaded after a retry. Pass `log.size` after a full sync,
-   * not "number just uploaded" — a delta would rewind the cursor via the
-   * `Math.max` floor and re-upload history forever.
+   * Tracks locally-produced ops as pending upload. Called by the store sink
+   * AFTER `appendSync`, back-to-back with no await between: the op must be
+   * durable before it becomes visible to the uploader, or a crash leaves a
+   * pending id with no durable op behind it. The residual crash window (power
+   * loss between the two synchronous writes) can strand a durable op outside
+   * the pending set - accepted as negligible, and guarded loudly below.
    */
-  markUploaded(count: number): void {
-    const next = Math.min(Math.max(count, this._meta.uploadedCount), this._ops.length);
-    if (next !== this._meta.uploadedCount) {
-      this._meta.uploadedCount = next;
+  noteLocalOps(ids: string[]): void {
+    if (!ids.length) {
+      return;
+    }
+    const known = new Set(this._ops.map((op) => op.id));
+    let changed = false;
+    for (const id of ids) {
+      if (!this._meta.pendingLocalOpIds.includes(id)) {
+        if (!known.has(id)) {
+          // A pending id with no durable op is the phantom the ordering above
+          // exists to prevent. Refusing it here keeps the set honest; the
+          // state change is already reduced, so this is logged loudly.
+          console.error('[op-log] Refusing to track a non-durable op as pending', {
+            opId: id,
+          });
+          continue;
+        }
+        this._meta.pendingLocalOpIds.push(id);
+        changed = true;
+      }
+    }
+    if (changed) {
       this._writeMeta();
     }
+  }
+
+  /**
+   * Drops ops from the pending set: accepted by the server, or superseded by
+   * conflict resolution (a losing local op stays in history but must never
+   * upload again - re-uploading a loser just earns another rejection).
+   */
+  dropPendingLocalOps(ids: readonly string[]): void {
+    if (!ids.length) {
+      return;
+    }
+    const drop = new Set(ids);
+    const before = this._meta.pendingLocalOpIds.length;
+    this._meta.pendingLocalOpIds = this._meta.pendingLocalOpIds.filter(
+      (id) => !drop.has(id),
+    );
+    if (this._meta.pendingLocalOpIds.length !== before) {
+      this._writeMeta();
+    }
+  }
+
+  /** Reconciles the pending set against the log (stale ids cannot upload). */
+  private _reconcilePending(): void {
+    const known = new Set(this._ops.map((op) => op.id));
+    this._meta.pendingLocalOpIds = this._meta.pendingLocalOpIds.filter((id) =>
+      known.has(id),
+    );
   }
 
   close(): void {

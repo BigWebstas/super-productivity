@@ -170,13 +170,14 @@ describe('OpLogStore', () => {
     });
   });
 
-  it('tracks the upload cursor without losing ops on restart', async () => {
+  it('tracks pending local ops across restarts', async () => {
     return withTempDir(async (dir) => {
       const log = OpLogStore.open(dir, {}, fixedId('E_aaaaaa'));
       await log.append([makeOp(), makeOp({ id: 'op-2' }), makeOp({ id: 'op-3' })]);
+      log.noteLocalOps(['op-1', 'op-2', 'op-3']);
       assert.equal(log.pendingUpload().length, 3);
 
-      log.markUploaded(2);
+      log.dropPendingLocalOps(['op-1', 'op-2']);
       log.close();
 
       const reopened = OpLogStore.open(dir, {}, fixedId('E_aaaaaa'));
@@ -187,13 +188,32 @@ describe('OpLogStore', () => {
     });
   });
 
-  it('never rewinds the upload cursor', async () => {
+  it('never re-uploads a dropped op, even on duplicate calls', async () => {
     return withTempDir(async (dir) => {
       const log = OpLogStore.open(dir, {}, fixedId('E_aaaaaa'));
       await log.append([makeOp(), makeOp({ id: 'op-2' })]);
-      log.markUploaded(2);
-      // A late duplicate acknowledgement must not re-upload op 1 forever.
-      log.markUploaded(0);
+      log.noteLocalOps(['op-1', 'op-2']);
+      log.dropPendingLocalOps(['op-1', 'op-2']);
+      // A late duplicate acknowledgement must not re-upload anything.
+      log.dropPendingLocalOps(['op-1']);
+      assert.equal(log.pendingUpload().length, 0);
+    });
+  });
+
+  it('does not treat downloaded remote ops as pending upload', async () => {
+    return withTempDir(async (dir) => {
+      const log = OpLogStore.open(dir, {}, fixedId('E_aaaaaa'));
+      // A remote op appended by sync apply: durable, but never tracked, so it
+      // can never enter the upload stream (its clientId is not ours).
+      await log.append([makeOp({ id: 'remote-1', clientId: 'E_other01' })]);
+      assert.equal(log.pendingUpload().length, 0);
+    });
+  });
+
+  it('refuses to track a non-durable op as pending', async () => {
+    return withTempDir(async (dir) => {
+      const log = OpLogStore.open(dir, {}, fixedId('E_aaaaaa'));
+      log.noteLocalOps(['ghost']);
       assert.equal(log.pendingUpload().length, 0);
     });
   });

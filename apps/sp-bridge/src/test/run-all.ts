@@ -10,5 +10,6 @@ import '../store/agent-store.spec';
 import '../oplog/operation-factory.spec';
 import '../oplog/op-log-store.spec';
 import '../rest/rest-api.spec';
+import '../sync/sync-engine.spec';
 
 void runAll();

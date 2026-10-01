@@ -21,6 +21,13 @@ import { OpLogStore } from './oplog/op-log-store';
 import { hydrateFromOpLog } from './oplog/hydrate';
 import { createRouteHandler } from './rest/router';
 import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
+import { createBridgeSyncProvider } from './sync/provider';
+import { SyncBusyError, SyncEngine } from './sync/engine';
+import {
+  DEFAULT_SYNC_INTERVAL_MS,
+  isSyncConfigured,
+  loadSyncConfig,
+} from './sync/sync-config';
 
 export interface StartedAgent {
   /** Absolute path the op log and token live in. Shown by the desktop shell. */
@@ -28,6 +35,8 @@ export interface StartedAgent {
   store: AgentStore;
   opLog: OpLogStore;
   server: LocalRestApiServer;
+  /** Null when sync is not configured (no access token). */
+  sync: SyncEngine | null;
   stop: () => Promise<void>;
 }
 
@@ -55,6 +64,10 @@ export const startAgent = async (
   const opLog = OpLogStore.open(dataDir, {}, generateClientId);
   const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
 
+  // Assigned after hydration (the engine needs the store); the sink below
+  // closes over the binding, not the value.
+  let sync: SyncEngine | null = null;
+
   // Registered before hydration so nothing can slip through unpersisted.
   // Synchronous and throwing: `appendSync` fails loudly so a non-durable
   // change throws out of `dispatch` (→ HTTP 500) instead of resolving into a
@@ -72,7 +85,11 @@ export const startAgent = async (
       );
       throw error;
     }
+    // Tracked after the append, back-to-back: the uploader must only ever see
+    // durable ops (see noteLocalOps).
+    opLog.noteLocalOps(ops.map((op) => op.id));
     opLog.recordLocalClock(store.vectorClock);
+    sync?.notifyLocalChange();
   });
 
   const hydrated = hydrateFromOpLog(store, opLog.all());
@@ -82,10 +99,47 @@ export const startAgent = async (
   for (const op of opLog.all()) {
     opLog.mergeRemoteVectorClock(op.vectorClock);
   }
+
+  // SuperSync, when configured. Without an access token the bridge is a
+  // local-only REST server and every sync route reports unconfigured.
+  const syncConfig = loadSyncConfig(dataDir);
+  if (isSyncConfigured(syncConfig)) {
+    const provider = createBridgeSyncProvider(dataDir);
+    const engine = new SyncEngine({ store, opLog, provider });
+    sync = engine;
+    engine.start(
+      syncConfig.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL_MS,
+      syncConfig.syncOnLocalChange ?? true,
+    );
+    // Best effort: a failed first sync must not take the REST API down with
+    // it. The timer and the local-change trigger keep retrying.
+    void engine.syncNow('startup').catch((error: unknown) => {
+      if (!(error instanceof SyncBusyError)) {
+        console.warn('[sync] Startup sync failed; will retry', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }
+
+  const syncRoutes = (() => {
+    const engine: SyncEngine | null = sync;
+    if (!engine) {
+      return null;
+    }
+    return {
+      status: () => ({ ...engine.status(), enabled: true as const }),
+      trigger: () => engine.syncNow('manual'),
+    };
+  })();
+
   const server = new LocalRestApiServer({
     dataDir,
     port,
-    onRequest: createRouteHandler({ store }),
+    onRequest: createRouteHandler({
+      store,
+      sync: syncRoutes,
+    }),
   });
   await server.listen();
   const address = server.address();
@@ -96,7 +150,9 @@ export const startAgent = async (
       `[bridge] replayed   ${hydrated.applied} operation(s)\n` +
       `[bridge] listening  http://${address?.host}:${address?.port}\n` +
       `[bridge] token      ${server.token}\n` +
-      `[bridge] sync       not enabled yet — see the roadmap in the README`,
+      (sync
+        ? `[bridge] sync       SuperSync enabled (base: ${syncConfig.baseUrl ?? 'default'})`
+        : `[bridge] sync       not configured — add accessToken to sync.json to enable`),
   );
 
   return {
@@ -104,7 +160,9 @@ export const startAgent = async (
     store,
     opLog,
     server,
+    sync,
     stop: async () => {
+      sync?.stop();
       await server.close();
       opLog.close();
     },

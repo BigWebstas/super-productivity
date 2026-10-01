@@ -38,6 +38,8 @@ import { TODAY_TAG } from '../../../../src/app/features/tag/tag.const';
 import type { Task } from '../../../../src/app/features/tasks/task.model';
 import type { RestRequest, RestResponse, RouteHandler } from './server';
 import { errorBody, successBody } from './server';
+import type { SyncCycleResult, SyncEngineStatus } from '../sync/engine';
+import { SyncBusyError, SyncNotConfiguredError } from '../sync/engine';
 
 /** Fields a caller may set. Everything else is rejected to protect invariants. */
 const ALLOWED_TASK_FIELDS = new Set<string>([
@@ -189,9 +191,13 @@ const pickAllowedFields = (body: Json): Json => {
 
 export interface RouterDeps {
   store: AgentStore;
+  sync?: {
+    status: () => SyncEngineStatus;
+    trigger: () => Promise<SyncCycleResult>;
+  } | null;
 }
 
-export const createRouteHandler = ({ store }: RouterDeps): RouteHandler => {
+export const createRouteHandler = ({ store, sync = null }: RouterDeps): RouteHandler => {
   const dispatch = (action: unknown): void => {
     store.dispatch(action as never);
   };
@@ -529,8 +535,37 @@ export const createRouteHandler = ({ store }: RouterDeps): RouteHandler => {
     return null;
   };
 
-  return (request: RestRequest): RestResponse => {
+  return async (request: RestRequest): Promise<RestResponse> => {
     const { method, path } = request;
+
+    if (method === 'GET' && path === '/sync/status') {
+      return sync ? ok(200, sync.status()) : ok(200, { enabled: false as const });
+    }
+
+    if (method === 'POST' && path === '/sync/trigger') {
+      if (!sync) {
+        return error(
+          409,
+          'SYNC_NOT_CONFIGURED',
+          'SuperSync is not configured — add an accessToken to sync.json',
+        );
+      }
+      try {
+        return ok(200, await sync.trigger());
+      } catch (triggerError) {
+        if (triggerError instanceof SyncBusyError) {
+          return error(429, 'SYNC_BUSY', 'A sync cycle is already running');
+        }
+        if (triggerError instanceof SyncNotConfiguredError) {
+          return error(
+            409,
+            'SYNC_NOT_CONFIGURED',
+            'SuperSync is not configured — add an accessToken to sync.json',
+          );
+        }
+        throw triggerError;
+      }
+    }
 
     if (method === 'GET' && path === '/status') {
       const state = store.state;

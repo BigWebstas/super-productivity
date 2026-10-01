@@ -26,7 +26,7 @@ import { randomBytes } from 'node:crypto';
  * embedded in the high 48 bits per RFC 9562 §5.7; the remaining bits come from
  * `crypto.randomBytes`, not `Math.random()`.
  */
-const createOperationId = (): string => {
+export const createOperationId = (): string => {
   const bytes = randomBytes(16);
   const now = BigInt(Date.now()) & ((1n << 48n) - 1n);
   for (let i = 0; i < 6; i++) {
