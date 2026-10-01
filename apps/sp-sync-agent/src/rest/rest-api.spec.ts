@@ -473,4 +473,55 @@ describe('LocalRestApiServer routes', () => {
       assert.equal(archived.body.data.length, 0);
     });
   });
+
+  it('accepts numeric timestamps and rejects string ones', async () => {
+    await withServer(async ({ request }) => {
+      const okRes = await request('POST', '/tasks', {
+        body: { title: 'timed', dueWithTime: Date.now() + 3_600_000 },
+      });
+      assert.equal(okRes.status, 201);
+      assert.equal(typeof okRes.body.data.dueWithTime, 'number');
+
+      const badRes = await request('POST', '/tasks', {
+        body: { title: 'bad', dueWithTime: 'tomorrow' },
+      });
+      assert.equal(badRes.status, 400);
+      assert.equal(badRes.body.error.code, 'INVALID_INPUT');
+    });
+  });
+
+  it('rejects creating a task in an unknown project', async () => {
+    await withServer(async ({ request }) => {
+      const res = await request('POST', '/tasks', {
+        body: { title: 'orphan', projectId: 'does-not-exist' },
+      });
+      assert.equal(res.status, 404);
+      assert.equal(res.body.error.code, 'PROJECT_NOT_FOUND');
+    });
+  });
+
+  it('rejects an unknown task source instead of answering with the wrong set', async () => {
+    await withServer(async ({ request }) => {
+      const res = await request('GET', '/tasks?source=bogus');
+      assert.equal(res.status, 400);
+      assert.equal(res.body.error.code, 'INVALID_INPUT');
+    });
+  });
+
+  it('includes dueWithTime tasks in the virtual TODAY set', async () => {
+    await withServer(async ({ request }) => {
+      const created = await request('POST', '/tasks', {
+        body: { title: 'today ts', dueWithTime: Date.now() + 3_600_000 },
+      });
+      assert.equal(created.status, 201);
+      const today = await request('GET', '/tasks?tagId=TODAY&includeDone=true');
+      assert.ok(
+        (today.body.data as unknown[]).some(
+          (t: unknown) =>
+            (t as { id: string }).id === (created.body.data as { id: string }).id,
+        ),
+        'dueWithTime task must appear under TODAY',
+      );
+    });
+  });
 });

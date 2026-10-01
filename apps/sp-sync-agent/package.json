@@ -25,6 +25,7 @@
     "build": "node scripts/build.mjs",
     "build:min": "node scripts/build.mjs --minify --sourcemap",
     "check:bundle": "node scripts/build.mjs --minify && node scripts/check-bundle-loads.mjs",
+    "kill": "node scripts/kill-agent.mjs",
     "package": "node scripts/build.mjs --minify && electron-builder --config electron-builder.yaml",
     "format": "prettier --write \"**/*.{ts,mjs,json,md,yaml,yml}\""
   }

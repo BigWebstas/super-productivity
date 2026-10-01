@@ -152,18 +152,23 @@ export class OpLogStore {
     if (!existsSync(opsPath)) {
       return [];
     }
-    const raw = readFileSync(opsPath, 'utf8');
+    // Work on raw bytes, not a decoded string: `truncateSync` takes a byte
+    // offset, and a character offset from a utf8 string is wrong as soon as a
+    // task title contains multi-byte characters (emoji, CJK). Newline (0x0A)
+    // never appears inside a multi-byte UTF-8 sequence, so scanning bytes for
+    // it is safe.
+    const raw = readFileSync(opsPath);
     const ops: Operation[] = [];
     let validBytes = 0;
     let lineStart = 0;
 
     while (lineStart < raw.length) {
-      const newlineIndex = raw.indexOf('\n', lineStart);
+      const newlineIndex = raw.indexOf(0x0a, lineStart);
       if (newlineIndex === -1) {
         // Trailing bytes with no terminator: an interrupted append.
         break;
       }
-      const line = raw.slice(lineStart, newlineIndex);
+      const line = raw.toString('utf8', lineStart, newlineIndex);
       if (line.trim()) {
         try {
           const parsed: unknown = JSON.parse(line);
@@ -180,9 +185,10 @@ export class OpLogStore {
       validBytes = lineStart;
     }
 
-    if (validBytes < statSync(opsPath).size) {
+    const fileSize = statSync(opsPath).size;
+    if (validBytes < fileSize) {
       console.warn(
-        `[op-log] Truncating ${statSync(opsPath).size - validBytes} trailing bytes from an ` +
+        `[op-log] Truncating ${fileSize - validBytes} trailing bytes from an ` +
           `interrupted append`,
       );
       truncateSync(opsPath, validBytes);
@@ -250,11 +256,12 @@ export class OpLogStore {
   /**
    * Appends operations and returns only once they are on disk.
    *
-   * Resolving after `fsyncSync` (not after `writeSync`) is the point: a caller
-   * that continues on a resolved promise is entitled to treat the operation as
-   * durable.
+   * Synchronous and throwing by contract (see `AgentStore.dispatch`): the
+   * store's sink must fail loudly, not reject later, so a non-durable change
+   * can never be reported as applied. `append` remains as an async wrapper for
+   * existing callers and tests.
    */
-  async append(ops: Operation[]): Promise<void> {
+  appendSync(ops: Operation[]): void {
     if (!ops.length) {
       return;
     }
@@ -268,16 +275,29 @@ export class OpLogStore {
     this._ops.push(...ops);
   }
 
+  /**
+   * Appends operations and returns only once they are on disk.
+   *
+   * Resolving after `fsyncSync` (not after `writeSync`) is the point: a caller
+   * that continues on a resolved promise is entitled to treat the operation as
+   * durable.
+   */
+  async append(ops: Operation[]): Promise<void> {
+    this.appendSync(ops);
+  }
+
   /** Operations the server has not accepted yet, oldest first. */
   pendingUpload(): Operation[] {
     return this._ops.slice(this._meta.uploadedCount);
   }
 
   /**
-   * Advances the upload cursor past `count` operations.
+   * Advances the upload cursor to `count`, an ABSOLUTE op count (not a delta).
    *
    * The cursor is a count rather than an op id so it stays valid when the same
-   * operation is re-uploaded after a retry.
+   * operation is re-uploaded after a retry. Pass `log.size` after a full sync,
+   * not "number just uploaded" — a delta would rewind the cursor via the
+   * `Math.max` floor and re-upload history forever.
    */
   markUploaded(count: number): void {
     const next = Math.min(Math.max(count, this._meta.uploadedCount), this._ops.length);

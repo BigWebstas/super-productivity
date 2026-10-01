@@ -63,8 +63,19 @@ let agent: StartedAgent | null = null;
  */
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
+  // `app.quit()` is asynchronous: without exiting here the second instance
+  // would keep running module scope, register `whenReady(startAgent)` and fight
+  // the first instance over the REST port and `ops.jsonl`.
   app.quit();
+  process.exit(0);
 }
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 
 const STATUS_HTML = (
   restUrl: string,
@@ -74,7 +85,7 @@ const STATUS_HTML = (
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
     <title>SP Sync Agent</title>
     <style>
       body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 20px; }
@@ -91,9 +102,9 @@ const STATUS_HTML = (
     <h1>SP Sync Agent</h1>
     <p class="sub">Serving the Super Productivity local REST API.</p>
     <dl>
-      <dt>API</dt><dd>${restUrl}</dd>
-      <dt>Token</dt><dd>${token}</dd>
-      <dt>Data</dt><dd>${dataDir}</dd>
+      <dt>API</dt><dd>${escapeHtml(restUrl)}</dd>
+      <dt>Token</dt><dd>${escapeHtml(token)}</dd>
+      <dt>Data</dt><dd>${escapeHtml(dataDir)}</dd>
     </dl>
     <p class="warn">
       SuperSync is not enabled in this build yet. The agent stores and replays
@@ -224,10 +235,19 @@ app.on('window-all-closed', () => {
   // would go away with it.
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   tray?.destroy();
   tray = null;
-  void agent?.stop();
+  const stopping = agent;
+  agent = null;
+  if (stopping) {
+    // `server.close()` is async (keep-alive sockets); quitting immediately
+    // would abandon it mid-close and leave the op-log fd unflushed on a bad
+    // day. Hold the quit until stop settles, then exit for real (`app.exit`
+    // does not re-fire `before-quit`, so this cannot loop).
+    event.preventDefault();
+    void stopping.stop().finally(() => app.exit(0));
+  }
 });
 
 const dialogError = (error: unknown): void => {

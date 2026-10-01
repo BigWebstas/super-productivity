@@ -35,8 +35,13 @@ export type CaptureSink = (action: PersistentAction) => void;
  * remote op must never re-emit it, or two clients would ping-pong the same
  * change forever.
  *
- * Runs at the app's capture position (index 1) so it observes the action before
- * any mutating meta-reducer touches state.
+ * Runs at the app's capture position (index 1) so its slot in the chain —
+ * and therefore the ordering constraints the registry documents — is
+ * preserved. It forwards the action object after the inner reducers run; that
+ * is equivalent to capturing before, because no meta-reducer mutates the
+ * action itself, and post-reduce capture means a reducer throw never emits an
+ * operation for state that was not produced (mirroring the app's failure-guard
+ * guarantee).
  */
 export const createCaptureMetaReducer =
   (sink: CaptureSink) =>

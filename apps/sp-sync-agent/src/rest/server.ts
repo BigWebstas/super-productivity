@@ -259,18 +259,20 @@ export class LocalRestApiServer {
     const url = new URL(req.url ?? '/', `http://${this._host}`);
     const method = req.method ?? 'GET';
 
+    // DNS rebinding: a browser on another origin can be pointed at loopback, so
+    // the Host header must be one we expect. Checked before /health too: the
+    // endpoint exposes nothing, but there is no reason to serve even that to a
+    // rebound host.
+    const host = req.headers.host;
+    if (!host || !this._allowedHosts.has(host)) {
+      writeJson(res, 403, errorBody('FORBIDDEN', 'Invalid Host header'));
+      return;
+    }
+
     // Health is deliberately unauthenticated: it is how a script discovers
     // whether the agent is up before it has a token, and it exposes nothing.
     if (method === 'GET' && url.pathname === '/health') {
       writeJson(res, 200, successBody({ server: 'up', rendererReady: true }));
-      return;
-    }
-
-    // DNS rebinding: a browser on another origin can be pointed at loopback, so
-    // the Host header must be one we expect.
-    const host = req.headers.host;
-    if (!host || !this._allowedHosts.has(host)) {
-      writeJson(res, 403, errorBody('FORBIDDEN', 'Invalid Host header'));
       return;
     }
 
@@ -298,67 +300,71 @@ export class LocalRestApiServer {
       return;
     }
 
-    const presented = parseBearerToken(req.headers.authorization);
-    if (presented === undefined) {
-      this._respondUnauthorized(
-        res,
-        `Authorization token required — send "Authorization: Bearer <token>". ${TOKEN_LOCATION_HINT}`,
-      );
-      return;
-    }
-    if (!compareToken(presented, this._tokens.get())) {
-      this._respondUnauthorized(
-        res,
-        `Invalid authorization token. ${TOKEN_LOCATION_HINT}`,
-      );
-      return;
-    }
-
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch (error) {
-      writeJson(
-        res,
-        400,
-        errorBody(
-          'INVALID_REQUEST_BODY',
-          error instanceof Error ? error.message : 'Invalid request body',
-        ),
-      );
-      return;
-    }
-
-    // Re-checked after the body is in. A body can take arbitrarily long to
-    // arrive, so without this whoever holds a leaked token can bank mutating
-    // requests: open them, wait out a rotation, then let the bodies land —
-    // breaking "regenerating invalidates the previous token immediately".
-    if (!compareToken(presented, this._tokens.get())) {
-      this._respondUnauthorized(
-        res,
-        `Invalid authorization token. ${TOKEN_LOCATION_HINT}`,
-      );
-      return;
-    }
-
+    // Held across auth + body read + route: a slow body must count toward the
+    // cap, or dripping request bodies bypasses the 429 entirely (slowloris).
     this._inFlight++;
     try {
-      const result = await this._route({
-        method,
-        path: url.pathname,
-        query: getQueryObject(url),
-        body,
-      });
-      writeJson(res, result.status, result.body);
-    } catch (error) {
-      writeJson(
-        res,
-        500,
-        errorBody(
-          'INTERNAL_ERROR',
-          error instanceof Error ? error.message : 'Unknown internal error',
-        ),
-      );
+      const presented = parseBearerToken(req.headers.authorization);
+      if (presented === undefined) {
+        this._respondUnauthorized(
+          res,
+          `Authorization token required — send "Authorization: Bearer <token>". ${TOKEN_LOCATION_HINT}`,
+        );
+        return;
+      }
+      if (!compareToken(presented, this._tokens.get())) {
+        this._respondUnauthorized(
+          res,
+          `Invalid authorization token. ${TOKEN_LOCATION_HINT}`,
+        );
+        return;
+      }
+
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch (error) {
+        writeJson(
+          res,
+          400,
+          errorBody(
+            'INVALID_REQUEST_BODY',
+            error instanceof Error ? error.message : 'Invalid request body',
+          ),
+        );
+        return;
+      }
+
+      // Re-checked after the body is in. A body can take arbitrarily long to
+      // arrive, so without this whoever holds a leaked token can bank mutating
+      // requests: open them, wait out a rotation, then let the bodies land —
+      // breaking "regenerating invalidates the previous token immediately".
+      if (!compareToken(presented, this._tokens.get())) {
+        this._respondUnauthorized(
+          res,
+          `Invalid authorization token. ${TOKEN_LOCATION_HINT}`,
+        );
+        return;
+      }
+
+      try {
+        const result = await this._route({
+          method,
+          path: url.pathname,
+          query: getQueryObject(url),
+          body,
+        });
+        writeJson(res, result.status, result.body);
+      } catch (error) {
+        writeJson(
+          res,
+          500,
+          errorBody(
+            'INTERNAL_ERROR',
+            error instanceof Error ? error.message : 'Unknown internal error',
+          ),
+        );
+      }
     } finally {
       this._inFlight--;
     }

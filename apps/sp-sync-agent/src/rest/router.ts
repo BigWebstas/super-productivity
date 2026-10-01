@@ -116,6 +116,14 @@ const withSubTasks = (state: AgentState, task: Task): Task & { subTasks?: Task[]
   return subTasks.length ? { ...task, subTasks } : task;
 };
 
+/** Local YYYY-MM-DD for a timestamp, matching the app's logical-today basis. */
+const toLocalDateStr = (timestamp: number): string => {
+  const d = new Date(timestamp);
+  const month = `${d.getMonth() + 1}`.padStart(2, '0');
+  const day = `${d.getDate()}`.padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+};
+
 /** Mirrors the app's `createNewTaskWithDefaults` for the agent's single context. */
 const createTaskWithDefaults = (title: string, additional: Partial<Task>): Task =>
   ({
@@ -132,6 +140,8 @@ const createTaskWithDefaults = (title: string, additional: Partial<Task>): Task 
 const hasInvalidFieldValue = (fields: Json): string | undefined => {
   const stringOrNull = (v: unknown): boolean =>
     v === null || v === undefined || typeof v === 'string';
+  const numberOrNull = (v: unknown): boolean =>
+    v === null || v === undefined || typeof v === 'number';
   if ('title' in fields && typeof fields.title !== 'string')
     return 'title must be a string';
   if ('notes' in fields && typeof fields.notes !== 'string')
@@ -158,7 +168,7 @@ const hasInvalidFieldValue = (fields: Json): string | undefined => {
     }
   }
   for (const key of ['dueWithTime', 'deadlineWithTime', 'deadlineRemindAt'] as const) {
-    if (key in fields && !stringOrNull(fields[key]))
+    if (key in fields && !numberOrNull(fields[key]))
       return `${key} must be a number or null`;
     if (typeof fields[key] === 'number' && fields[key] <= 0) {
       return `${key} must be a positive timestamp`;
@@ -195,11 +205,14 @@ export const createRouteHandler = ({ store }: RouterDeps): RouteHandler => {
     };
 
     const rawSource = getParam('source') ?? 'active';
-    const source = (['active', 'archived', 'all'] as const).includes(
-      rawSource as 'active',
-    )
-      ? (rawSource as 'active' | 'archived' | 'all')
-      : 'active';
+    if (!(['active', 'archived', 'all'] as const).includes(rawSource as 'active')) {
+      return error(
+        400,
+        'INVALID_INPUT',
+        `Unknown source "${rawSource}" — expected active, archived or all`,
+      );
+    }
+    const source = rawSource as 'active' | 'archived' | 'all';
     // The agent keeps no separate archive store yet, so `archived` is
     // reported as empty rather than silently answering with active tasks —
     // answering with the wrong set is worse than answering with none.
@@ -215,13 +228,25 @@ export const createRouteHandler = ({ store }: RouterDeps): RouteHandler => {
     if (projectId) {
       filtered = filtered.filter((t) => t.projectId === projectId);
     }
+    const todayLocalStr = toLocalDateStr(Date.now());
     const tagId = getParam('tagId');
     if (tagId) {
       filtered =
         tagId === TODAY_TAG.id
           ? // TODAY is virtual: membership comes from the due date, never from
-            // task.tagIds (ARCHITECTURE-DECISIONS.md #2).
-            filtered.filter((t) => t.dueDay === new Date().toISOString().slice(0, 10))
+            // task.tagIds (ARCHITECTURE-DECISIONS.md #2). Both date and
+            // timestamp forms count, compared in LOCAL time like the app's
+            // logical today — a UTC date would shift the set by a day for
+            // half the planet.
+            filtered.filter((t) => {
+              if (t.dueDay === todayLocalStr) {
+                return true;
+              }
+              return (
+                typeof t.dueWithTime === 'number' &&
+                toLocalDateStr(t.dueWithTime) === todayLocalStr
+              );
+            })
           : filtered.filter((t) => (t.tagIds ?? []).includes(tagId));
     }
     if ((getParam('includeDone') ?? 'false').toLowerCase() !== 'true') {
@@ -307,11 +332,31 @@ export const createRouteHandler = ({ store }: RouterDeps): RouteHandler => {
         : error(500, 'INTERNAL_ERROR', 'Subtask was not created');
     }
 
-    const task = createTaskWithDefaults(title, fields as Partial<Task>);
+    // The work context must agree with the task's project: `addTask` links the
+    // task into the context's ordering, so INBOX context + another projectId
+    // would create a task no list owns. PATCH already validates the target
+    // project; creation must too, or orphan tasks sync to every device.
+    const projectId =
+      typeof fields.projectId === 'string' && fields.projectId.trim()
+        ? (fields.projectId as string)
+        : INBOX_PROJECT.id;
+    const projects = (
+      store.state[PROJECT_FEATURE_NAME] as unknown as {
+        entities: Record<string, { isArchived?: boolean }>;
+      }
+    ).entities;
+    const targetProject = projects[projectId];
+    if (!targetProject || targetProject.isArchived) {
+      return error(404, 'PROJECT_NOT_FOUND', 'Destination project not found or archived');
+    }
+    const task = createTaskWithDefaults(title, {
+      ...fields,
+      projectId,
+    } as Partial<Task>);
     dispatch(
       TaskSharedActions.addTask({
         task,
-        workContextId: INBOX_PROJECT.id,
+        workContextId: projectId,
         workContextType: WorkContextType.PROJECT,
         isAddToBacklog: false,
         isAddToBottom: true,
@@ -465,7 +510,8 @@ export const createRouteHandler = ({ store }: RouterDeps): RouteHandler => {
         return handlePatchTask(taskId, request);
       }
       if (method === 'DELETE') {
-        // The app deletes the whole family, so a subtask's siblings go with it.
+        // withSubTasks attaches the children so a parent delete removes the
+        // whole family, matching the app's deleteTask semantics.
         dispatch(
           TaskSharedActions.deleteTask({
             task: withSubTasks(store.state, task) as never,

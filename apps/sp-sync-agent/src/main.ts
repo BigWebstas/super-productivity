@@ -44,22 +44,32 @@ export const startAgent = async (
   const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
 
   // Registered before hydration so nothing can slip through unpersisted.
+  // Synchronous and throwing: `appendSync` fails loudly so a non-durable
+  // change throws out of `dispatch` (→ HTTP 500) instead of resolving into a
+  // 201 with no operation behind it. State was already reduced at that point,
+  // but observers are only notified after the sink accepts, so nothing downstream
+  // treats the change as applied.
   store.onOperations((ops) => {
-    // Fire-and-forget: `append` is synchronous up to the fsync inside an async
-    // wrapper, and a REST response must not be delayed behind a disk flush it
-    // does not depend on. Failures are logged rather than thrown because the
-    // state change has already been applied to the store.
-    void opLog.append(ops).catch((error: unknown) => {
+    try {
+      opLog.appendSync(ops);
+    } catch (error) {
       console.error(
         '[agent] FAILED TO PERSIST OPERATIONS — this state change has no durable ' +
           'operation behind it and will diverge on the next sync:',
         error,
       );
-    });
+      throw error;
+    }
     opLog.recordLocalClock(store.vectorClock);
   });
 
   const hydrated = hydrateFromOpLog(store, opLog.all());
+  // Persist remote clocks observed in the log, not just the store's copy:
+  // without this a future compaction/truncation would lose causality and the
+  // next local op would look concurrent with history already applied.
+  for (const op of opLog.all()) {
+    opLog.mergeRemoteVectorClock(op.vectorClock);
+  }
   const server = new LocalRestApiServer({
     dataDir,
     port,

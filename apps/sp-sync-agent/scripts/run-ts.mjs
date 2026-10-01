@@ -18,7 +18,7 @@ import { createRequire } from 'node:module';
 import Module, { isBuiltin } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { loadAliases } from './aliases.mjs';
 
 const require = createRequire(import.meta.url);
@@ -119,7 +119,9 @@ const entryPath = resolve(appDir, entry);
 // Present the entry as the running script, the way `node src/main.ts` would.
 // Without this, `process.argv[1]` stays this runner and any
 // "am I the entry point?" check inside the app silently never fires.
-process.argv[1] = entryPath;
+// The entry itself is dropped from the args so the entry sees
+// [node, entry, ...entryArgs], not [node, entry, entry, ...entryArgs].
+process.argv = [process.argv[0], entryPath, ...rest];
 try {
   // `@ngrx/store` (and anything else partially compiled for Angular) declares
   // its injectables via ɵɵngDeclareFactory, which falls back to the JIT
@@ -154,5 +156,3 @@ try {
   }
   throw error;
 }
-void pathToFileURL;
-void rest;

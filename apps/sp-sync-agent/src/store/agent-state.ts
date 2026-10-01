@@ -113,6 +113,7 @@ export const createFeatureReducer = (): ((
       [PROJECT_FEATURE_NAME]: projectReducer(state[PROJECT_FEATURE_NAME], action),
       [TAG_FEATURE_NAME]: tagReducer(state[TAG_FEATURE_NAME], action),
       [plannerFeatureKey]: plannerReducer(state[plannerFeatureKey], action),
+      [appStateFeatureKey]: appStateReducer(state[appStateFeatureKey], action),
       [CONFIG_FEATURE_NAME]: globalConfigReducer(state[CONFIG_FEATURE_NAME], action),
       [TIME_TRACKING_FEATURE_KEY]: timeTrackingReducer(
         state[TIME_TRACKING_FEATURE_KEY],

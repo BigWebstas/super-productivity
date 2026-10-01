@@ -45,6 +45,10 @@ export class AgentStore {
    * operation behind it, which is unrecoverable divergence once another device
    * syncs. Registering the sink once at construction makes it impossible for a
    * new dispatch site (a route, a future timer, a plugin) to forget.
+   *
+   * The sink MUST be synchronous and throw on failure (never reject later):
+   * `dispatch` calls it before notifying observers, so a throw prevents both
+   * the 201 and the notification for state that is not durable.
    */
   private _operationSink: (ops: Operation[]) => void = () => undefined;
   private _clientId: string;
@@ -110,7 +114,6 @@ export class AgentStore {
   dispatch(action: AgentAction): Operation[] {
     this._captured = [];
     this._state = this._reducer(this._state, action);
-    this._notify();
 
     const ops = this._captured.map((captured) => {
       // `incrementVectorClock` returns a new clock; the store must adopt it.
@@ -128,8 +131,14 @@ export class AgentStore {
     });
 
     if (ops.length) {
+      // Synchronous by contract: the sink must throw on failure rather than
+      // reject later, so a non-durable change surfaces as a thrown dispatch
+      // (→ HTTP 500) instead of a 201 for state with no operation behind it.
+      // Notified only after the sink accepts, so observers never see state
+      // that failed to persist.
       this._operationSink(ops);
     }
+    this._notify();
     return ops;
   }
 

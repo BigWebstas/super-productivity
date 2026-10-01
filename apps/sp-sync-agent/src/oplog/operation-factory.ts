@@ -18,22 +18,25 @@ import type { ActionType } from '../../../../src/app/op-log/core/action-types.en
 import type { PersistentAction } from '../../../../src/app/op-log/core/persistent-action.interface';
 import { CURRENT_SCHEMA_VERSION } from '@sp/shared-schema';
 
+import { randomBytes } from 'node:crypto';
+
 /**
  * Operation id. Super Productivity uses uuidv7 (time-ordered) so that ids sort
- * in creation order, which keeps an append-only log readable. Node's
- * `crypto.randomUUID` is v4; a v7-shaped id is generated here to preserve the
- * ordering property without pulling in a uuid dependency.
+ * in creation order, which keeps an append-only log readable. The timestamp is
+ * embedded in the high 48 bits per RFC 9562 §5.7; the remaining bits come from
+ * `crypto.randomBytes`, not `Math.random()`.
  */
 const createOperationId = (): string => {
-  const bytes = new Uint8Array(16);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = Math.floor(Math.random() * 256);
+  const bytes = randomBytes(16);
+  const now = BigInt(Date.now()) & ((1n << 48n) - 1n);
+  for (let i = 0; i < 6; i++) {
+    bytes[5 - i] = Number((now >> BigInt(i * 8)) & 0xffn);
   }
   // version 7
   bytes[6] = (bytes[6] & 0x0f) | 0x70;
   // variant
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const hex = bytes.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(
     16,
     20,

@@ -24,7 +24,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 const TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const TOKEN_LENGTH = 32;
@@ -143,7 +143,6 @@ export class AccessTokenStore {
       // token that is not durably stored, because it would die on next launch.
       throw error;
     }
-    void dirname;
     return token;
   }
 }
