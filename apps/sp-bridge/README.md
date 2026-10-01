@@ -338,15 +338,22 @@ and never written itself. Encryption is mandatory — without a key the engine
 refuses to run rather than pushing plaintext into an encrypted dataset.
 
 There is no password login to redeem (the server uses magic links and
-passkeys; tokens live ~365 days), so rotation is manual: replace `accessToken`
-in `sync.json` (and `expiresAt` if you track it) and the next cycle picks it
-up with no restart — the engine detects the changed credentials, invalidates
-the provider's per-token caches, and breaks through failure backoff
-immediately. `GET /sync/status` reports `lastErrorCode` (`auth_failed` sticks
-until the next success), `authFailedSince`, `consecutiveFailures`,
-`nextRetryAt`, and `tokenExpiringSoon` (warns 7 days before `expiresAt`).
-Automatic retries back off 1m → 2m → 4m … capped at 15m; `POST /sync/trigger`
-always runs regardless.
+passkeys; tokens live ~365 days), so rotation is manual — by file, env, or
+`POST /sync/config` (which also starts, stops, or retunes the engine without
+a restart, and validates strictly: unknown fields fail rather than silently
+disable sync):
+
+```bash
+TOKEN=<printed token>
+curl -s localhost:3976/sync/config -H "Authorization: Bearer $TOKEN"
+curl -s -X POST localhost:3976/sync/config \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"accessToken":"<account token>","encryptKey":"<secret>"}'
+```
+
+Config responses carry presence flags (`accessTokenSet`), never secrets. The
+engine detects the changed credentials, invalidates the provider's per-token
+caches, and breaks through failure backoff immediately.
 
 ### Sync E2E
 

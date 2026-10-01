@@ -40,6 +40,8 @@ import type { RestRequest, RestResponse, RouteHandler } from './server';
 import { errorBody, successBody } from './server';
 import type { SyncCycleResult, SyncEngineStatus } from '../sync/engine';
 import { SyncBusyError, SyncNotConfiguredError } from '../sync/engine';
+import type { RedactedSyncConfig } from '../sync/sync-config';
+import { SyncConfigValidationError } from '../sync/sync-config';
 
 /** Fields a caller may set. Everything else is rejected to protect invariants. */
 const ALLOWED_TASK_FIELDS = new Set<string>([
@@ -192,12 +194,20 @@ const pickAllowedFields = (body: Json): Json => {
 export interface RouterDeps {
   store: AgentStore;
   sync?: {
-    status: () => SyncEngineStatus;
+    status: () => SyncEngineStatus | { enabled: false };
     trigger: () => Promise<SyncCycleResult>;
+  } | null;
+  syncConfig?: {
+    get: () => RedactedSyncConfig;
+    update: (patch: unknown) => RedactedSyncConfig;
   } | null;
 }
 
-export const createRouteHandler = ({ store, sync = null }: RouterDeps): RouteHandler => {
+export const createRouteHandler = ({
+  store,
+  sync = null,
+  syncConfig = null,
+}: RouterDeps): RouteHandler => {
   const dispatch = (action: unknown): void => {
     store.dispatch(action as never);
   };
@@ -540,6 +550,30 @@ export const createRouteHandler = ({ store, sync = null }: RouterDeps): RouteHan
 
     if (method === 'GET' && path === '/sync/status') {
       return sync ? ok(200, sync.status()) : ok(200, { enabled: false as const });
+    }
+
+    if (method === 'GET' && path === '/sync/config') {
+      // Reads the file, never secrets: safe to serve even unconfigured.
+      if (!syncConfig) {
+        return error(409, 'SYNC_NOT_CONFIGURED', 'Sync configuration is unavailable');
+      }
+      return ok(200, syncConfig.get());
+    }
+
+    if (method === 'POST' && path === '/sync/config') {
+      // This is how an unconfigured bridge gets its first token, so it must
+      // not require a running engine — applying the patch starts one.
+      if (!syncConfig) {
+        return error(409, 'SYNC_NOT_CONFIGURED', 'Sync configuration is unavailable');
+      }
+      try {
+        return ok(200, syncConfig.update(request.body));
+      } catch (updateError) {
+        if (updateError instanceof SyncConfigValidationError) {
+          return error(400, 'INVALID_INPUT', updateError.message);
+        }
+        throw updateError;
+      }
     }
 
     if (method === 'POST' && path === '/sync/trigger') {

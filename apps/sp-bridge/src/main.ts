@@ -22,11 +22,14 @@ import { hydrateFromOpLog } from './oplog/hydrate';
 import { createRouteHandler } from './rest/router';
 import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
 import { createBridgeSyncProvider } from './sync/provider';
-import { SyncBusyError, SyncEngine } from './sync/engine';
+import { SyncBusyError, SyncEngine, SyncNotConfiguredError } from './sync/engine';
 import {
   DEFAULT_SYNC_INTERVAL_MS,
   isSyncConfigured,
   loadSyncConfig,
+  redactSyncConfig,
+  saveSyncConfig,
+  validateSyncConfigPatch,
 } from './sync/sync-config';
 
 export interface StartedAgent {
@@ -102,43 +105,83 @@ export const startAgent = async (
 
   // SuperSync, when configured. Without an access token the bridge is a
   // local-only REST server and every sync route reports unconfigured.
-  const syncConfig = loadSyncConfig(dataDir);
-  if (isSyncConfigured(syncConfig)) {
-    const provider = createBridgeSyncProvider(dataDir);
-    const engine = new SyncEngine({ store, opLog, provider });
-    sync = engine;
-    engine.start(
-      syncConfig.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL_MS,
-      syncConfig.syncOnLocalChange ?? true,
-    );
-    // Best effort: a failed first sync must not take the REST API down with
-    // it. The timer and the local-change trigger keep retrying.
-    void engine.syncNow('startup').catch((error: unknown) => {
-      if (!(error instanceof SyncBusyError)) {
-        console.warn('[sync] Startup sync failed; will retry', {
-          message: error instanceof Error ? error.message : String(error),
+  // `recycleSyncEngine` also runs after every POST /sync/config, so
+  // provisioning, disabling and interval changes apply without a restart.
+  const recycleSyncEngine = (reason: string): void => {
+    const cfg = loadSyncConfig(dataDir);
+    if (isSyncConfigured(cfg)) {
+      if (!sync) {
+        const provider = createBridgeSyncProvider(dataDir);
+        sync = new SyncEngine({ store, opLog, provider });
+      } else {
+        sync.bumpEpoch();
+      }
+      sync.start(
+        cfg.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL_MS,
+        cfg.syncOnLocalChange ?? true,
+      );
+      if (reason === 'startup') {
+        // Best effort: a failed first sync must not take the REST API down
+        // with it. The timer and the local-change trigger keep retrying.
+        void sync.syncNow(reason).catch((error: unknown) => {
+          if (!(error instanceof SyncBusyError)) {
+            console.warn('[sync] Startup sync failed; will retry', {
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
         });
       }
-    });
-  }
-
-  const syncRoutes = (() => {
-    const engine: SyncEngine | null = sync;
-    if (!engine) {
-      return null;
+    } else if (sync) {
+      sync.stop();
+      sync = null;
     }
-    return {
-      status: () => ({ ...engine.status(), enabled: true as const }),
-      trigger: () => engine.syncNow('manual'),
-    };
-  })();
+  };
+  recycleSyncEngine('startup');
 
   const server = new LocalRestApiServer({
     dataDir,
     port,
     onRequest: createRouteHandler({
       store,
-      sync: syncRoutes,
+      sync: {
+        status: () => {
+          const engine: SyncEngine | null = sync;
+          return engine
+            ? { ...engine.status(), enabled: true as const }
+            : {
+                enabled: false as const,
+                running: false,
+                lastSyncAt: null,
+                lastResult: null,
+                lastError: null,
+                lastErrorCode: null,
+                authFailedSince: null,
+                consecutiveFailures: 0,
+                nextRetryAt: null,
+                tokenExpiresAt: null,
+                tokenExpiringSoon: false,
+                pendingUpload: opLog.pendingUpload().length,
+              };
+        },
+        trigger: () => {
+          const engine: SyncEngine | null = sync;
+          if (!engine) {
+            throw new SyncNotConfiguredError();
+          }
+          return engine.syncNow('manual');
+        },
+      },
+      syncConfig: {
+        get: () => redactSyncConfig(loadSyncConfig(dataDir)),
+        update: (patch: unknown) => {
+          const validated = validateSyncConfigPatch(patch);
+          const saved = saveSyncConfig(dataDir, validated);
+          recycleSyncEngine(
+            isSyncConfigured(saved) ? 'config-enabled' : 'config-disabled',
+          );
+          return redactSyncConfig(saved);
+        },
+      },
     }),
   });
   await server.listen();
@@ -151,7 +194,7 @@ export const startAgent = async (
       `[bridge] listening  http://${address?.host}:${address?.port}\n` +
       `[bridge] token      ${server.token}\n` +
       (sync
-        ? `[bridge] sync       SuperSync enabled (base: ${syncConfig.baseUrl ?? 'default'})`
+        ? `[bridge] sync       SuperSync enabled (base: ${loadSyncConfig(dataDir).baseUrl ?? 'default'})`
         : `[bridge] sync       not configured — add accessToken to sync.json to enable`),
   );
 
@@ -160,7 +203,11 @@ export const startAgent = async (
     store,
     opLog,
     server,
-    sync,
+    // Getter, not a snapshot: POST /sync/config can start or stop the engine
+    // at runtime, and readers (routes, shell, tests) must see the current one.
+    get sync(): SyncEngine | null {
+      return sync;
+    },
     stop: async () => {
       sync?.stop();
       await server.close();

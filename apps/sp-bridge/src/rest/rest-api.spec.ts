@@ -7,6 +7,7 @@ import { describe, it } from '../test/harness';
 import { AgentStore } from '../store/agent-store';
 import { createRouteHandler } from './router';
 import { LocalRestApiServer, parseBearerToken } from './server';
+import { SyncConfigValidationError } from '../sync/sync-config';
 import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
 import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
 
@@ -20,14 +21,24 @@ const withServer = async (
     ) => Promise<{ status: number; body: any; headers: Headers }>;
     server: LocalRestApiServer;
     store: AgentStore;
+    dir: string;
   }) => Promise<void>,
+  overrides: {
+    syncConfig?: {
+      get: () => Record<string, unknown>;
+      update: (patch: unknown) => Record<string, unknown>;
+    };
+  } = {},
 ): Promise<void> => {
   const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-rest-'));
   const store = new AgentStore('E_aaaaaa');
   const server = new LocalRestApiServer({
     dataDir: dir,
     port: 0,
-    onRequest: createRouteHandler({ store }),
+    onRequest: createRouteHandler({
+      store,
+      syncConfig: overrides.syncConfig as never,
+    }),
   });
   await server.listen();
   const address = server.address();
@@ -66,7 +77,7 @@ const withServer = async (
   };
 
   try {
-    await fn({ request, server, store });
+    await fn({ request, server, store, dir });
   } finally {
     await server.close();
     rmSync(dir, { recursive: true, force: true });
@@ -523,5 +534,54 @@ describe('LocalRestApiServer routes', () => {
         'dueWithTime task must appear under TODAY',
       );
     });
+  });
+});
+
+describe('Sync config routes', () => {
+  it('409s config routes without a config provider', async () => {
+    await withServer(async ({ request }) => {
+      assert.equal((await request('GET', '/sync/config')).status, 409);
+      assert.equal((await request('POST', '/sync/config', { body: {} })).status, 409);
+    });
+  });
+
+  it('serves redacted config, applies patches, rejects typos', async () => {
+    let stored: Record<string, unknown> = { accessToken: 'tok-0001' };
+    const syncConfig = {
+      get: () => ({ accessTokenSet: !!stored.accessToken }),
+      update: (patch: unknown) => {
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+          throw new SyncConfigValidationError('Config body must be a JSON object');
+        }
+        if ('accesToken' in (patch as Record<string, unknown>)) {
+          throw new SyncConfigValidationError('Unknown config field(s): accesToken');
+        }
+        stored = { ...stored, ...(patch as Record<string, unknown>) };
+        return { accessTokenSet: !!stored.accessToken };
+      },
+    };
+    await withServer(
+      async ({ request }) => {
+        const get = await request('GET', '/sync/config');
+        assert.equal(get.status, 200);
+        assert.equal(get.body.data.accessTokenSet, true);
+        assert.equal(JSON.stringify(get.body).includes('tok-0001'), false);
+
+        const typo = await request('POST', '/sync/config', {
+          body: { accesToken: 'x' },
+        });
+        assert.equal(typo.status, 400);
+        assert.equal(typo.body.error.code, 'INVALID_INPUT');
+
+        const patched = await request('POST', '/sync/config', {
+          body: { syncIntervalMs: 5000 },
+        });
+        assert.equal(patched.status, 200);
+
+        const nonObject = await request('POST', '/sync/config', { body: 42 });
+        assert.equal(nonObject.status, 400);
+      },
+      { syncConfig },
+    );
   });
 });

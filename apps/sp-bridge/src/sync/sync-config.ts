@@ -116,12 +116,137 @@ export const loadSyncConfig = (dataDir: string): BridgeSyncConfig => {
 /** True when a sync cycle has credentials to work with. */
 export const isSyncConfigured = (cfg: BridgeSyncConfig): boolean => !!cfg.accessToken;
 
-/** Persists user-supplied fields (e.g. from a future config route). */
+/**
+ * The config as served over the REST API: presence flags instead of secrets.
+ * A leaked status response must never contain a token or key.
+ */
+export interface RedactedSyncConfig {
+  baseUrl?: string;
+  accessTokenSet: boolean;
+  refreshTokenSet: boolean;
+  encryptKeySet: boolean;
+  isEncryptionEnabled?: boolean;
+  expiresAt?: number;
+  syncIntervalMs?: number;
+  syncOnLocalChange?: boolean;
+}
+
+export const redactSyncConfig = (cfg: BridgeSyncConfig): RedactedSyncConfig => ({
+  baseUrl: cfg.baseUrl,
+  accessTokenSet: !!cfg.accessToken,
+  refreshTokenSet: !!cfg.refreshToken,
+  encryptKeySet: !!cfg.encryptKey,
+  isEncryptionEnabled: cfg.isEncryptionEnabled,
+  expiresAt: cfg.expiresAt,
+  syncIntervalMs: cfg.syncIntervalMs,
+  syncOnLocalChange: cfg.syncOnLocalChange,
+});
+
+export class SyncConfigValidationError extends Error {
+  override readonly name = 'SyncConfigValidationError';
+}
+
+const CONFIG_FIELD_NAMES = [
+  'baseUrl',
+  'accessToken',
+  'refreshToken',
+  'expiresAt',
+  'encryptKey',
+  'masterPassword',
+  'isEncryptionEnabled',
+  'syncIntervalMs',
+  'syncOnLocalChange',
+] as const;
+
+type ConfigFieldName = (typeof CONFIG_FIELD_NAMES)[number];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Validates a `POST /sync/config` body. Unknown fields are rejected (a typo
+ * like `accesToken` must fail loudly, never silently disable sync), and an
+ * empty-string `accessToken` clears the token. Throws
+ * `SyncConfigValidationError` on any problem.
+ */
+export const validateSyncConfigPatch = (body: unknown): Partial<BridgeSyncConfig> => {
+  if (!isRecord(body)) {
+    throw new SyncConfigValidationError('Config body must be a JSON object');
+  }
+  const unknownFields = Object.keys(body).filter(
+    (key): key is string => !(CONFIG_FIELD_NAMES as readonly string[]).includes(key),
+  );
+  if (unknownFields.length) {
+    throw new SyncConfigValidationError(
+      `Unknown config field(s): ${unknownFields.join(', ')}`,
+    );
+  }
+  const patch: Partial<BridgeSyncConfig> = {};
+  const field = (name: ConfigFieldName): unknown =>
+    (body as Record<string, unknown>)[name];
+
+  if ('baseUrl' in body) {
+    if (typeof field('baseUrl') !== 'string') {
+      throw new SyncConfigValidationError('baseUrl must be a string');
+    }
+    patch.baseUrl = field('baseUrl') as string;
+  }
+  for (const name of [
+    'accessToken',
+    'refreshToken',
+    'encryptKey',
+    'masterPassword',
+  ] as const) {
+    if (name in body && typeof field(name) !== 'string') {
+      throw new SyncConfigValidationError(`${name} must be a string`);
+    }
+  }
+  if ('accessToken' in body) patch.accessToken = field('accessToken') as string;
+  if ('refreshToken' in body) patch.refreshToken = field('refreshToken') as string;
+  if ('encryptKey' in body) patch.encryptKey = field('encryptKey') as string;
+  if ('masterPassword' in body) patch.masterPassword = field('masterPassword') as string;
+  if ('expiresAt' in body) {
+    if (typeof field('expiresAt') !== 'number') {
+      throw new SyncConfigValidationError('expiresAt must be a number');
+    }
+    patch.expiresAt = field('expiresAt') as number;
+  }
+  if ('isEncryptionEnabled' in body) {
+    if (typeof field('isEncryptionEnabled') !== 'boolean') {
+      throw new SyncConfigValidationError('isEncryptionEnabled must be a boolean');
+    }
+    patch.isEncryptionEnabled = field('isEncryptionEnabled') as boolean;
+  }
+  if ('syncIntervalMs' in body) {
+    if (typeof field('syncIntervalMs') !== 'number') {
+      throw new SyncConfigValidationError('syncIntervalMs must be a number');
+    }
+    patch.syncIntervalMs = field('syncIntervalMs') as number;
+  }
+  if ('syncOnLocalChange' in body) {
+    if (typeof field('syncOnLocalChange') !== 'boolean') {
+      throw new SyncConfigValidationError('syncOnLocalChange must be a boolean');
+    }
+    patch.syncOnLocalChange = field('syncOnLocalChange') as boolean;
+  }
+  if (patch.encryptKey && patch.masterPassword) {
+    throw new SyncConfigValidationError(
+      'encryptKey and masterPassword are mutually exclusive',
+    );
+  }
+  return patch;
+};
+
+/** Persists user-supplied fields (REST route, provisioning scripts). */
 export const saveSyncConfig = (
   dataDir: string,
   cfg: Partial<BridgeSyncConfig>,
 ): BridgeSyncConfig => {
   const next = { ...readFileConfig(dataDir), ...cfg };
+  if (next.masterPassword && !next.encryptKey) {
+    next.encryptKey = next.masterPassword;
+    next.isEncryptionEnabled = true;
+  }
   delete next.masterPassword;
   writeFileConfig(dataDir, next);
   return loadSyncConfig(dataDir);
