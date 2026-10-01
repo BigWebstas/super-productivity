@@ -571,7 +571,9 @@ describe('sync-errors', () => {
         }
       ).entities['t1'];
       store.dispatch(
-        TaskSharedActions.deleteTask({ task: { ...live, subTasks: [] } }) as never,
+        TaskSharedActions.deleteTask({
+          task: { ...live, subTasks: [] } as never,
+        }),
       );
       // Older concurrent remote update loses to the delete.
       const remote = updateTaskOp('t1', 'resurrect', REMOTE_ID, { [REMOTE_ID]: 2 }, 1);
