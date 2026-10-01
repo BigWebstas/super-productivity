@@ -469,14 +469,11 @@ describe('LocalRestApiServer routes', () => {
     });
   });
 
-  it('404s an unknown route and 501s the unimplemented focus route', async () => {
+  it('404s an unknown route', async () => {
     await withServer(async ({ request }) => {
       const notFound = await request('GET', '/nope');
       assert.equal(notFound.status, 404);
       assert.equal(notFound.body.error.code, 'NOT_FOUND');
-
-      const focus = await request('GET', '/focus');
-      assert.equal(focus.status, 501);
     });
   });
 
@@ -628,5 +625,73 @@ describe('Sync config routes', () => {
       },
       { syncConfig },
     );
+  });
+
+describe('Focus routes', () => {
+  it('reports an idle timer as null', async () => {
+    await withServer(async ({ request }) => {
+      const res = await request('GET', '/focus');
+      assert.equal(res.status, 200);
+      assert.equal(res.body.data.timer, null);
+      assert.equal(res.body.data.isSessionDone, false);
+    });
+  });
+
+  it('starts, pauses, resumes and stops a session', async () => {
+    await withServer(async ({ request }) => {
+      const created = await request('POST', '/tasks', { body: { title: 'Focus me' } });
+      const id = created.body.data.id;
+
+      const started = await request('POST', '/focus/start', {
+        body: { durationMs: 60_000, taskId: id },
+      });
+      assert.equal(started.status, 200);
+
+      const running = await request('GET', '/focus');
+      assert.equal(running.body.data.timer.status, 'running');
+      assert.equal(running.body.data.timer.purpose, 'work');
+      assert.equal(running.body.data.timer.durationMs, 60_000);
+
+      assert.equal((await request('POST', '/focus/pause')).status, 200);
+      assert.equal((await request('GET', '/focus')).body.data.timer.status, 'paused');
+
+      assert.equal((await request('POST', '/focus/resume')).status, 200);
+      assert.equal((await request('GET', '/focus')).body.data.timer.status, 'running');
+
+      assert.equal((await request('POST', '/focus/stop')).status, 200);
+      assert.equal((await request('GET', '/focus')).body.data.timer, null);
+    });
+  });
+
+  it('starts a break and validates control input', async () => {
+    await withServer(async ({ request }) => {
+      const brk = await request('POST', '/focus/break/start', {
+        body: { durationMs: 300_000 },
+      });
+      assert.equal(brk.status, 200);
+      const focus = await request('GET', '/focus');
+      assert.equal(focus.body.data.timer.purpose, 'break');
+
+      assert.equal(
+        (await request('POST', '/focus/start', { body: { durationMs: -5 } })).status,
+        400,
+      );
+      assert.equal(
+        (
+          await request('POST', '/focus/start', {
+            body: { durationMs: 1000, taskId: 'nope' },
+          })
+        ).status,
+        404,
+      );
+      assert.equal(
+        (
+          await request('POST', '/focus/break/start', {
+            body: { durationMs: 'soon' },
+          })
+        ).status,
+        400,
+      );
+    });
   });
 });

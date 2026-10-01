@@ -249,6 +249,8 @@ src/
     hydrate.ts           replay the log through the app's bulk-apply action
   archive/
     archive-store.ts     file-backed archived-task projection (archive.json)
+  focus/
+    focus-ticker.ts      1s headless tick + session-completion dispatch
   sync/
     sync-config.ts       sync.json + SP_BRIDGE_SYNC_* env overrides
     credential-store.ts  file-backed SuperSync credential port
@@ -309,8 +311,15 @@ Ordered by dependency. Each step is independently testable. Steps 1–4 are done
    update in the app's exact wire shape; losers leave the pending set but stay
    in history. Server-side `CONFLICT_*` rejections run a bounded extra
    download → resolve → upload round.
-5. **Focus/timer slice** — `/focus` and `/status` timing need focus-mode state
-   and a ticker.
+5. ~~**Focus/timer slice**~~ — `GET /focus` mirrors the desktop response over
+   the real focus-mode slice, driven by a 1s headless ticker dispatching the
+   real `tick`; completion dispatches the real `completeFocusSession` (plus
+   `incrementCycle` in Pomodoro mode, mirroring that effect). Session control
+   (`POST /focus/start|pause|resume|stop`, `/focus/break/start`) is a bridge
+   extension — the desktop API is read-only there — without which the timer
+   could never run headless. Effect-driven follow-ups (sounds, dialogs, break
+   auto-start, tracking pauses) and the session-to-task timeSpent flush stay
+   out: a completed session does not write timeSpent.
 6. ~~**Archive store**~~ — `POST /tasks/:id/archive` and `POST /tasks/:id/restore`
    over a file-backed `archive.json`, with `?source=archived` and `all`
    reading it; remote archive/restore/update ops mirror the app's
@@ -502,3 +511,10 @@ error, which is the dangerous kind:
   the recovery — taking the whole bridge down over an already-contained
   error. `headless-globals` stubs that dialog surface (alert → log,
   confirm → false) and nothing else.
+- **Focus completion without the effects is half a feature.** The tick,
+  the stop-at-duration transition, `completeFocusSession` and the Pomodoro
+  `incrementCycle` are all reducer state and replay faithfully headless — but
+  everything the desktop fans out through effects (break auto-start, tracking
+  pauses, the timeSpent flush to the task) does not run, and reimplementing
+  those would be parallel-domain drift. The timer reads live and controls
+  work; time accounting stays a documented gap rather than a faked one.

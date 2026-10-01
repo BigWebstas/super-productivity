@@ -13,5 +13,6 @@ import '../rest/rest-api.spec';
 import '../sync/sync-engine.spec';
 import '../sync/sync-config.spec';
 import '../sync/sync-lifecycle.spec';
+import '../focus/focus-ticker.spec';
 
 void runAll();

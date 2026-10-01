@@ -117,6 +117,11 @@ import {
   layoutReducer,
   LAYOUT_FEATURE_NAME,
 } from '../../../../src/app/core-ui/layout/store/layout.reducer';
+import {
+  focusModeReducer,
+  initialState as initialFocusModeState,
+  FOCUS_MODE_FEATURE_KEY,
+} from '../../../../src/app/features/focus-mode/store/focus-mode.reducer';
 import type { Action } from '@ngrx/store';
 import type { TaskState } from '../../../../src/app/features/tasks/task.model';
 import type { ProjectState } from '../../../../src/app/features/project/project.model';
@@ -136,6 +141,7 @@ import type { WorkContextState } from '../../../../src/app/features/work-context
 import type { BoardsState } from '../../../../src/app/features/boards/store/boards.reducer';
 import type { ReminderState } from '../../../../src/app/features/reminder/store/reminder.reducer';
 import type { LayoutState } from '../../../../src/app/core-ui/layout/store/layout.reducer';
+import type { FocusModeState } from '../../../../src/app/features/focus-mode/focus-mode.model';
 
 export interface AgentState {
   [TASK_FEATURE_NAME]: TaskState;
@@ -158,6 +164,7 @@ export interface AgentState {
   [PLUGIN_USER_DATA_FEATURE_NAME]: PluginUserDataState;
   [PLUGIN_METADATA_FEATURE_NAME]: PluginMetaDataState;
   [LAYOUT_FEATURE_NAME]: LayoutState;
+  [FOCUS_MODE_FEATURE_KEY]: FocusModeState;
 }
 
 export type AgentAction = Action;
@@ -189,6 +196,7 @@ export const createInitialAgentState = (): AgentState =>
     [PLUGIN_USER_DATA_FEATURE_NAME]: initialPluginUserDataState,
     [PLUGIN_METADATA_FEATURE_NAME]: initialPluginMetaDataState,
     [LAYOUT_FEATURE_NAME]: INITIAL_LAYOUT_STATE,
+    [FOCUS_MODE_FEATURE_KEY]: initialFocusModeState,
   }) as unknown as AgentState;
 
 /**
@@ -250,6 +258,7 @@ export const createFeatureReducer = (): ((
         action,
       ),
       [LAYOUT_FEATURE_NAME]: layoutReducer(state[LAYOUT_FEATURE_NAME], action),
+      [FOCUS_MODE_FEATURE_KEY]: focusModeReducer(state[FOCUS_MODE_FEATURE_KEY], action),
     } as unknown as AgentState;
   };
 };

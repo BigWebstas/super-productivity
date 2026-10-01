@@ -22,6 +22,7 @@ import { hydrateFromOpLog } from './oplog/hydrate';
 import { createRouteHandler } from './rest/router';
 import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
 import { FileTaskArchive } from './archive/archive-store';
+import { FocusTicker } from './focus/focus-ticker';
 import { createBridgeSyncProvider } from './sync/provider';
 import { SyncBusyError, SyncEngine, SyncNotConfiguredError } from './sync/engine';
 import {
@@ -68,6 +69,7 @@ export const startAgent = async (
   const opLog = OpLogStore.open(dataDir, {}, generateClientId);
   const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
   const archive = new FileTaskArchive(dataDir);
+  const focusTicker = new FocusTicker(store);
 
   // Assigned after hydration (the engine needs the store); the sink below
   // closes over the binding, not the value.
@@ -188,6 +190,7 @@ export const startAgent = async (
     }),
   });
   await server.listen();
+  focusTicker.start();
   const address = server.address();
 
   console.log(
@@ -213,6 +216,7 @@ export const startAgent = async (
     },
     stop: async () => {
       sync?.stop();
+      focusTicker.stop();
       await server.close();
       opLog.close();
     },

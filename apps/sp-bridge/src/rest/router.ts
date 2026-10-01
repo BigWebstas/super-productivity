@@ -37,6 +37,25 @@ import { DEFAULT_TASK } from '../../../../src/app/features/tasks/task.model';
 import { isValidDBDateStr } from '../../../../src/app/util/get-db-date-str';
 import { TODAY_TAG } from '../../../../src/app/features/tag/tag.const';
 import type { Task } from '../../../../src/app/features/tasks/task.model';
+import {
+  cancelFocusSession,
+  pauseFocusSession,
+  startBreak,
+  startFocusSession,
+  unPauseFocusSession,
+} from '../../../../src/app/features/focus-mode/store/focus-mode.actions';
+import { FOCUS_MODE_DEFAULTS } from '../../../../src/app/features/focus-mode/focus-mode.model';
+import {
+  selectCurrentCycle,
+  selectIsBreakTimeUp,
+  selectIsInOvertime,
+  selectIsLongBreak,
+  selectIsRunning,
+  selectIsSessionCompleted,
+  selectMode,
+  selectTimeRemaining,
+  selectTimer,
+} from '../../../../src/app/features/focus-mode/store/focus-mode.selectors';
 import type { RestRequest, RestResponse, RouteHandler } from './server';
 import { errorBody, successBody } from './server';
 import type { FileTaskArchive } from '../archive/archive-store';
@@ -681,11 +700,110 @@ export const createRouteHandler = ({
     }
 
     if (method === 'GET' && path === '/focus') {
-      return error(
-        501,
-        'NOT_IMPLEMENTED',
-        'The focus/Pomodoro slice is not implemented in the agent yet; see the roadmap in the README.',
+      // Same shape as the desktop handler. Focus state is device-local
+      // chrome (never synced), so this reads the live slice directly.
+      const focusState = store.state;
+      const timer = selectTimer(focusState);
+      return ok(200, {
+        mode: selectMode(focusState),
+        cycle: selectCurrentCycle(focusState),
+        isSessionDone: selectIsSessionCompleted(focusState),
+        timer:
+          timer.purpose === null
+            ? null
+            : {
+                purpose: timer.purpose,
+                status: selectIsRunning(focusState)
+                  ? 'running'
+                  : selectIsBreakTimeUp(focusState)
+                    ? 'done'
+                    : 'paused',
+                isOvertime: selectIsInOvertime(focusState),
+                isLongBreak: selectIsLongBreak(focusState),
+                elapsedMs: timer.elapsed,
+                remainingMs: selectTimeRemaining(focusState),
+                durationMs: timer.duration,
+              },
+      });
+    }
+
+    if (method === 'POST' && path === '/focus/start') {
+      // Bridge extension (the desktop API is read-only here): without a way
+      // to start a session the timer could never run headless.
+      if (!isRecord(request.body)) {
+        return error(400, 'INVALID_INPUT', 'Request body must be a JSON object');
+      }
+      const { durationMs, taskId } = request.body as {
+        durationMs?: unknown;
+        taskId?: unknown;
+      };
+      if (
+        durationMs !== undefined &&
+        (typeof durationMs !== 'number' || durationMs <= 0)
+      ) {
+        return error(400, 'INVALID_INPUT', 'durationMs must be a positive number');
+      }
+      if (taskId !== undefined && typeof taskId !== 'string') {
+        return error(400, 'INVALID_INPUT', 'taskId must be a string');
+      }
+      if (typeof taskId === 'string' && !getTaskById(store.state, taskId)) {
+        return error(404, 'TASK_NOT_FOUND', 'Task not found');
+      }
+      if (typeof taskId === 'string') {
+        dispatch(setCurrentTask({ id: taskId }));
+      }
+      dispatch(
+        startFocusSession({
+          duration: typeof durationMs === 'number' ? durationMs : undefined,
+        }),
       );
+      return ok(200, { started: true, taskId: taskId ?? null });
+    }
+
+    if (method === 'POST' && path === '/focus/pause') {
+      dispatch(pauseFocusSession({}));
+      return ok(200, { paused: true });
+    }
+
+    if (method === 'POST' && path === '/focus/resume') {
+      dispatch(unPauseFocusSession());
+      return ok(200, { running: true });
+    }
+
+    if (method === 'POST' && path === '/focus/stop') {
+      dispatch(cancelFocusSession());
+      return ok(200, { stopped: true });
+    }
+
+    if (method === 'POST' && path === '/focus/break/start') {
+      if (!isRecord(request.body)) {
+        return error(400, 'INVALID_INPUT', 'Request body must be a JSON object');
+      }
+      const { durationMs, isLongBreak } = request.body as {
+        durationMs?: unknown;
+        isLongBreak?: unknown;
+      };
+      if (
+        durationMs !== undefined &&
+        (typeof durationMs !== 'number' || durationMs <= 0)
+      ) {
+        return error(400, 'INVALID_INPUT', 'durationMs must be a positive number');
+      }
+      if (isLongBreak !== undefined && typeof isLongBreak !== 'boolean') {
+        return error(400, 'INVALID_INPUT', 'isLongBreak must be a boolean');
+      }
+      dispatch(
+        startBreak({
+          duration:
+            typeof durationMs === 'number'
+              ? durationMs
+              : isLongBreak === true
+                ? FOCUS_MODE_DEFAULTS.LONG_BREAK_DURATION
+                : FOCUS_MODE_DEFAULTS.SHORT_BREAK_DURATION,
+          isLongBreak: isLongBreak === true,
+        }),
+      );
+      return ok(200, { started: true });
     }
 
     if (method === 'GET' && path === '/task-control/current') {
