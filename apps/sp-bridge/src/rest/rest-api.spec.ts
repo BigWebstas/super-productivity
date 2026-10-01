@@ -626,6 +626,7 @@ describe('Sync config routes', () => {
       { syncConfig },
     );
   });
+});
 
 describe('Focus routes', () => {
   it('reports an idle timer as null', async () => {
