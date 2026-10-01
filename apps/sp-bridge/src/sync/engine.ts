@@ -74,6 +74,12 @@ import type { OpLogStore } from '../oplog/op-log-store';
 import { decryptDownloadedOperations, encryptOperationsForUpload } from './crypto';
 import { createOperationId } from '../oplog/operation-factory';
 import { incrementVectorClock } from '../../../../src/app/core/util/vector-clock';
+import {
+  classifySyncError,
+  nextRetryDelayMs,
+  TOKEN_EXPIRY_WARN_MS,
+  type SyncErrorCode,
+} from './sync-errors';
 
 const DOWNLOAD_PAGE_SIZE = 500;
 const MAX_DOWNLOAD_ITERATIONS = 1000;
@@ -125,6 +131,13 @@ export interface SyncEngineStatus {
   lastSyncAt: number | null;
   lastResult: SyncCycleResult | null;
   lastError: string | null;
+  lastErrorCode: SyncErrorCode | null;
+  /** Set on the first auth failure, cleared on the next success. Never cleared by retries. */
+  authFailedSince: number | null;
+  consecutiveFailures: number;
+  nextRetryAt: number | null;
+  tokenExpiresAt: number | null;
+  tokenExpiringSoon: boolean;
   pendingUpload: number;
 }
 
@@ -144,6 +157,12 @@ export class SyncEngine {
   lastSyncAt: number | null = null;
   lastResult: SyncCycleResult | null = null;
   lastError: string | null = null;
+  lastErrorCode: SyncErrorCode | null = null;
+  authFailedSince: number | null = null;
+  consecutiveFailures = 0;
+  nextRetryAt: number | null = null;
+  private _lastTokenFingerprint: string | null = null;
+  private _tokenExpiresAt: number | null = null;
 
   constructor(private readonly _deps: EngineDeps) {}
 
@@ -158,9 +177,49 @@ export class SyncEngine {
     this._epoch++;
     if (intervalMs > 0) {
       this._timer = setInterval(() => {
-        void this.syncNow('interval').catch(() => undefined);
+        void (async () => {
+          // Backoff suppresses doomed retries, but a provisioning event
+          // (new token in sync.json) must break through immediately: the
+          // file read is cheap, the wait is not.
+          if (this._isBackedOff(Date.now()) && !(await this._credentialsChanged())) {
+            return;
+          }
+          await this.syncNow('interval').catch(() => undefined);
+        })();
       }, intervalMs);
       this._timer.unref?.();
+    }
+  }
+
+  /** True while failure backoff suppresses automatic cycles (manual runs always go). */
+  isBackedOff(now: number = Date.now()): boolean {
+    return this._isBackedOff(now);
+  }
+
+  private _isBackedOff(now: number): boolean {
+    return (
+      this.consecutiveFailures > 0 && this.nextRetryAt !== null && now < this.nextRetryAt
+    );
+  }
+
+  private _recordSuccess(): void {
+    this.consecutiveFailures = 0;
+    this.nextRetryAt = null;
+    this.authFailedSince = null;
+  }
+
+  private _recordFailure(error: unknown): void {
+    this.consecutiveFailures++;
+    this.nextRetryAt = Date.now() + nextRetryDelayMs(this.consecutiveFailures);
+    this.lastErrorCode = classifySyncError(error);
+    this.lastError = error instanceof Error ? error.message : String(error);
+    if (this.lastErrorCode === 'auth_failed' && this.authFailedSince === null) {
+      this.authFailedSince = Date.now();
+      console.error(
+        '[sync] Authentication failed - sync is halted until a valid accessToken ' +
+          'is provisioned in sync.json (see README "Sync configuration"). ' +
+          'Automatic retries back off; a manual POST /sync/trigger always runs.',
+      );
     }
   }
 
@@ -219,18 +278,47 @@ export class SyncEngine {
       this.lastSyncAt = Date.now();
       this.lastResult = result;
       this.lastError = null;
+      this.lastErrorCode = null;
+      this._recordSuccess();
       return result;
     } catch (error) {
       if (
         !(error instanceof SyncBusyError) &&
         !(error instanceof SyncEpochChangedError)
       ) {
-        this.lastError = error instanceof Error ? error.message : String(error);
+        this._recordFailure(error);
       }
       throw error;
     } finally {
       this._running = false;
     }
+  }
+
+  /**
+   * True when the loaded credentials differ from the previous cycle's.
+   * Rotation path: the provider caches its server-seq key per token, so a
+   * swapped token with a warm cache would read the old token's cursor slot
+   * (full redownload) and write progress back to it (lost). Invalidating on
+   * change keeps exactly one cursor per account.
+   */
+  private async _credentialsChanged(): Promise<boolean> {
+    const port = this._deps.provider.privateCfg;
+    if (!port || typeof port.load !== 'function') {
+      return false;
+    }
+    const cfg = await port.load().catch(() => null);
+    const fingerprint = `${cfg?.baseUrl ?? ''}|${cfg?.accessToken ?? ''}`;
+    if (this._lastTokenFingerprint === null) {
+      this._lastTokenFingerprint = fingerprint;
+      return false;
+    }
+    if (fingerprint !== this._lastTokenFingerprint) {
+      this._lastTokenFingerprint = fingerprint;
+      this._deps.provider.invalidateCredentialCache();
+      console.log('[sync] Credentials changed - caches invalidated');
+      return true;
+    }
+    return false;
   }
 
   private async _cycle(reason: string, epoch: number): Promise<SyncCycleResult> {
@@ -246,6 +334,13 @@ export class SyncEngine {
       latestServerSeq: 0,
     };
 
+    await this._credentialsChanged();
+    this._assertEpoch(epoch);
+    const cfgForExpiry =
+      typeof provider.privateCfg?.load === 'function'
+        ? await provider.privateCfg.load().catch(() => null)
+        : null;
+    this._tokenExpiresAt = cfgForExpiry?.expiresAt ?? null;
     if (!(await provider.isReady())) {
       console.log('[sync] Not configured yet — skipping cycle');
       return result;
@@ -658,12 +753,21 @@ export class SyncEngine {
   }
 
   status(): SyncEngineStatus {
+    const now = Date.now();
     return {
       enabled: false,
       running: this._running,
       lastSyncAt: this.lastSyncAt,
       lastResult: this.lastResult,
       lastError: this.lastError,
+      lastErrorCode: this.lastErrorCode,
+      authFailedSince: this.authFailedSince,
+      consecutiveFailures: this.consecutiveFailures,
+      nextRetryAt: this.nextRetryAt,
+      tokenExpiresAt: this._tokenExpiresAt,
+      tokenExpiringSoon:
+        this._tokenExpiresAt !== null &&
+        this._tokenExpiresAt - now < TOKEN_EXPIRY_WARN_MS,
       pendingUpload: this._deps.opLog.pendingUpload().length,
     };
   }

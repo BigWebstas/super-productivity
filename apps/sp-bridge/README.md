@@ -337,6 +337,17 @@ has an `SP_BRIDGE_SYNC_*` environment override (`SP_BRIDGE_SYNC_BASE_URL`,
 and never written itself. Encryption is mandatory — without a key the engine
 refuses to run rather than pushing plaintext into an encrypted dataset.
 
+There is no password login to redeem (the server uses magic links and
+passkeys; tokens live ~365 days), so rotation is manual: replace `accessToken`
+in `sync.json` (and `expiresAt` if you track it) and the next cycle picks it
+up with no restart — the engine detects the changed credentials, invalidates
+the provider's per-token caches, and breaks through failure backoff
+immediately. `GET /sync/status` reports `lastErrorCode` (`auth_failed` sticks
+until the next success), `authFailedSince`, `consecutiveFailures`,
+`nextRetryAt`, and `tokenExpiringSoon` (warns 7 days before `expiresAt`).
+Automatic retries back off 1m → 2m → 4m … capped at 15m; `POST /sync/trigger`
+always runs regardless.
+
 ### Sync E2E
 
 Needs the TEST_MODE server (loopback-bound, rate limits off):

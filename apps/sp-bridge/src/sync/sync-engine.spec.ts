@@ -13,6 +13,8 @@ import { INBOX_PROJECT } from '../../../../src/app/features/project/project.cons
 import { TaskSharedActions } from '../../../../src/app/root-store/meta/task-shared.actions';
 import { createTask } from '../../../../src/app/features/tasks/task.test-helper';
 import { encrypt } from '@sp/sync-core';
+import { AuthFailSPError } from '@sp/sync-providers/errors';
+import { classifySyncError, nextRetryDelayMs } from './sync-errors';
 import type { Operation } from '../../../../src/app/op-log/core/operation.types';
 import type { SuperSyncProvider } from '@sp/sync-providers/super-sync';
 import type {
@@ -43,6 +45,10 @@ interface StubServer {
   encryptionEnabled: boolean;
   gapOnce: boolean;
   rejectIds: Set<string>;
+  token: string;
+  expiresAt?: number;
+  authFail: boolean;
+  cacheInvalidations: number;
 }
 
 const makeStubServer = (overrides: Partial<StubServer> = {}): StubServer => ({
@@ -54,6 +60,9 @@ const makeStubServer = (overrides: Partial<StubServer> = {}): StubServer => ({
   encryptionEnabled: false,
   gapOnce: false,
   rejectIds: new Set(),
+  token: 'stub-token-0001',
+  authFail: false,
+  cacheInvalidations: 0,
   ...overrides,
 });
 
@@ -64,13 +73,29 @@ const stubProvider = (server: StubServer): SuperSyncProvider => {
     isReady: async () => server.ready,
     getEncryptKey: async () => server.key,
     isEncryptionEnabled: async () => server.encryptionEnabled,
-    invalidateCredentialCache: () => undefined,
+    invalidateCredentialCache: () => {
+      server.cacheInvalidations++;
+    },
+    privateCfg: {
+      load: async () => ({
+        accessToken: server.token,
+        baseUrl: undefined,
+        expiresAt: server.expiresAt,
+      }),
+      setComplete: async () => undefined,
+      updatePartial: async () => undefined,
+      upsertPartial: async () => undefined,
+      clear: async () => undefined,
+    },
     getLastServerSeq: async () => seq,
     setLastServerSeq: async (next: number) => {
       seq = next;
       server.seqCalls.push(next);
     },
     downloadOps: async (sinceSeq: number) => {
+      if (server.authFail) {
+        throw new AuthFailSPError('stub 401');
+      }
       if (server.gapOnce && sinceSeq > 0) {
         server.gapOnce = false;
         return { ops: [], hasMore: false, latestSeq: 7, gapDetected: true };
@@ -370,5 +395,70 @@ describe('SyncEngine', () => {
       assert.equal(result.uploaded, 0);
       assert.equal(opLog.pendingUpload().length, 1);
     });
+  });
+
+  it('flags auth failures sticky until the next success', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer({ authFail: true });
+      const { engine } = await setup(dir, server);
+      await assert.rejects(() => engine.syncNow('test'), /stub 401/);
+      assert.equal(engine.lastErrorCode, 'auth_failed');
+      assert.ok(engine.authFailedSince !== null);
+      assert.equal(engine.consecutiveFailures, 1);
+      assert.equal(engine.isBackedOff(Date.now()), true);
+
+      server.authFail = false;
+      const result = await engine.syncNow('test');
+      assert.equal(result.downloaded, 0);
+      assert.equal(engine.lastErrorCode, null);
+      assert.equal(engine.authFailedSince, null);
+      assert.equal(engine.consecutiveFailures, 0);
+      assert.equal(engine.isBackedOff(Date.now()), false);
+    });
+  });
+
+  it('invalidates provider caches when the token rotates', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { engine } = await setup(dir, server);
+      await engine.syncNow('first');
+      assert.equal(server.cacheInvalidations, 0);
+
+      server.token = 'stub-token-0002';
+      await engine.syncNow('second');
+      assert.equal(server.cacheInvalidations, 1);
+    });
+  });
+
+  it('reports an expiring token before it fails', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer({ expiresAt: Date.now() + 3_600_000 });
+      const { engine } = await setup(dir, server);
+      await engine.syncNow('test');
+      const status = engine.status();
+      assert.equal(status.tokenExpiringSoon, true);
+      assert.ok(status.tokenExpiresAt !== null);
+    });
+  });
+});
+
+describe('sync-errors', () => {
+  it('classifies auth, network, crypto and server failures', () => {
+    assert.equal(classifySyncError(new AuthFailSPError('x')), 'auth_failed');
+    assert.equal(classifySyncError(new TypeError('fetch failed')), 'network');
+    assert.equal(
+      classifySyncError(new Error('1 op could not be decrypted')),
+      'encryption',
+    );
+    assert.equal(classifySyncError(new Error('boom (HTTP 503)')), 'server');
+    assert.equal(classifySyncError(new Error('nope')), 'unknown');
+  });
+
+  it('backs off 1m, 2m, 4m capped at 15m', () => {
+    assert.equal(nextRetryDelayMs(0), 0);
+    assert.equal(nextRetryDelayMs(1), 60_000);
+    assert.equal(nextRetryDelayMs(2), 120_000);
+    assert.equal(nextRetryDelayMs(3), 240_000);
+    assert.equal(nextRetryDelayMs(10), 900_000);
   });
 });
