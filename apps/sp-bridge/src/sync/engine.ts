@@ -652,14 +652,17 @@ export class SyncEngine {
         const synthesis = this._synthesizeLwwUpdate(
           plan.conflict as unknown as BridgeConflict,
         );
-        if (synthesis) {
+        if (synthesis === (NULL_VEHICLE as unknown as Operation)) {
+          // Pure crossing: keep the local win, apply nothing, build nothing.
+          resolutions.push({ conflict: plan.conflict, winner: 'local' });
+        } else if (synthesis) {
           resolutions.push({
             conflict: plan.conflict,
             winner: 'local',
             localWinOp: synthesis as unknown as CoreOperation,
           });
         } else {
-          console.warn('[sync] Local-win entity vanished; falling back to remote', {
+          console.warn('[sync] Local win cannot be built; falling back to remote', {
             entityType: plan.conflict.entityType,
             entityId: plan.conflict.entityId,
           });
@@ -681,7 +684,9 @@ export class SyncEngine {
       result.remoteWins += partitions.remoteWinsCount;
       result.localWins += partitions.localWinsCount;
       toApply.push(...(partitions.remoteWinsOps as unknown as Operation[]));
-      synthesized = partitions.newLocalWinOps as unknown as Operation[];
+      synthesized = (partitions.newLocalWinOps as unknown as Operation[]).filter(
+        (op) => op !== (NULL_VEHICLE as unknown as Operation),
+      );
       toApply.push(...synthesized);
       result.rejectedRemote += partitions.remoteOpsToReject.length;
       // Losers leave the upload stream (history keeps them): re-uploading a
@@ -775,18 +780,52 @@ export class SyncEngine {
   }
 
   /**
-   * Builds the dominating LWW update for a local-wins conflict, mirroring the
-   * app's `createLWWUpdateOp` field for field (replace mode over the live
-   * entity snapshot, canonical top-level id, dominating merged clock).
-   * Returns null when the entity is gone - the caller then takes the remote
-   * side instead of broadcasting a resurrect.
+   * Builds the vehicle that carries a local win to the server, mirroring the
+   * app's three local-win kinds:
+   *
+   * - live entity: a dominating LWW update over the current snapshot (the
+   *   app's `createLWWUpdateOp`, replace mode, canonical top-level id);
+   * - entity gone with a pending local delete/archive for it: a re-emission
+   *   of that op with a merged dominating clock (the app's replacement
+   *   delete). Re-uploading the ORIGINAL would just earn another rejection,
+   *   and dropping it would lose the delete everywhere;
+   * - entity gone with nothing pending (pure crossing of already-uploaded
+   *   history): no vehicle — skipping the remote op IS the resolution.
+   *
+   * Returns null only when no win can be constructed, and the caller then
+   * takes the remote side instead of broadcasting a resurrect.
    */
   private _synthesizeLwwUpdate(conflict: BridgeConflict): Operation | null {
-    const { store } = this._deps;
+    const { store, opLog } = this._deps;
     const { entityType, entityId, localOps, remoteOps } = conflict;
     const entityState = readEntityState(store.state, entityType, entityId);
     if (entityState === undefined || entityState === null) {
-      return null;
+      const pendingIds = new Set(opLog.pendingUpload().map((op) => op.id));
+      const pendingWinner = [...localOps]
+        .filter((op) => pendingIds.has(op.id))
+        .sort((a, b) => b.timestamp - a.timestamp)[0];
+      if (!pendingWinner) {
+        // Pure crossing: the retained history already converged elsewhere.
+        // Tell the caller there is nothing to build AND nothing to apply.
+        return NULL_VEHICLE as unknown as Operation;
+      }
+      let mergedClock: Record<string, number> = {};
+      for (const op of [...localOps, ...remoteOps]) {
+        mergedClock = mergeVectorClocks(mergedClock, op.vectorClock);
+      }
+      return {
+        id: createOperationId(),
+        actionType: pendingWinner.actionType,
+        opType: pendingWinner.opType,
+        entityType: pendingWinner.entityType,
+        entityId: pendingWinner.entityId,
+        entityIds: pendingWinner.entityIds,
+        payload: pendingWinner.payload,
+        clientId: store.clientId,
+        vectorClock: incrementVectorClock(mergedClock, store.clientId),
+        timestamp: pendingWinner.timestamp,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+      };
     }
     const basePayload =
       typeof entityState === 'object' ? (entityState as Record<string, unknown>) : {};
@@ -852,6 +891,13 @@ interface BridgeConflict {
   localOps: Operation[];
   remoteOps: Operation[];
 }
+
+/**
+ * `_synthesizeLwwUpdate` returns this instead of an op when the resolution is
+ * "skip the remote, build nothing" (pure crossing). It must never reach the
+ * log or the wire: the caller filters it back out.
+ */
+const NULL_VEHICLE = { __nullVehicle: true } as const;
 
 export class SyncBusyError extends Error {
   override readonly name = 'SyncBusyError';

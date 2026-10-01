@@ -379,7 +379,9 @@ Needs the TEST_MODE server (loopback-bound, rate limits off). CI runs this on
 every push to `sp-bridge` touching this directory
 ([`sp-bridge-sync-e2e.yml`](../../.github/workflows/sp-bridge-sync-e2e.yml),
 ubuntu-latest — the installer job's Windows runners cannot host the compose
-stack):
+stack). Five legs, all E2EE-encrypted: A → server → B replication,
+concurrent-edit convergence, archive replication, update-wins-over-delete,
+and delete-wins:
 
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose.supersync.yaml up -d supersync
@@ -513,6 +515,12 @@ error, which is the dangerous kind:
   lifecycle reducer maps over `task.subTasks` unconditionally, so the route
   normalizes childless tasks to `subTasks: []` (the action creator requires
   the full payload for exactly this reason).
+- **A winning local delete needs a replacement op, not a shrug.** Skipping
+  the remote update while leaving the original delete pending just earns
+  another `CONFLICT_CONCURRENT` — and falling back to the remote side
+  resurrects the task and drops the delete from the upload stream, diverging
+  permanently. Local delete/archive wins now re-emit the original payload
+  with a merged dominating clock (the app's replacement-delete shape).
 - **A boxed reducer error kills a headless process.** The failure guard keeps
   state alive by design, but its dev-mode reporter (`devError` →
   `alert`/`confirm`) touches `document` and throws from a `setTimeout` after

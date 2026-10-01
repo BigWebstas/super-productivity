@@ -145,6 +145,42 @@ const main = async (): Promise<void> => {
       fail(`B archive mismatch: ${JSON.stringify(bArchived.body)}`);
     }
     console.log('E2E: archive replication OK');
+
+    // 6. Update-wins-over-delete: A deletes, B concurrently updates newer.
+    const race = await api(agentA, 'POST', '/tasks', { title: 'Race' });
+    const raceId = (race.body.data as { id: string }).id;
+    await agentA.sync.syncNow('e2e-a-upload-race');
+    await agentB.sync.syncNow('e2e-b-download-race');
+    await api(agentA, 'DELETE', `/tasks/${raceId}`);
+    await new Promise((r) => setTimeout(r, 100));
+    await api(agentB, 'PATCH', `/tasks/${raceId}`, { title: 'B wins' });
+    await agentA.sync.syncNow('e2e-a-upload-delete');
+    await agentB.sync.syncNow('e2e-b-resolve-delete');
+    await agentA.sync.syncNow('e2e-a-converge-delete');
+    const raceA = (await api(agentA, 'GET', `/tasks/${raceId}`)).body.data as {
+      title: string;
+    };
+    const raceB = (await api(agentB, 'GET', `/tasks/${raceId}`)).body.data as {
+      title: string;
+    };
+    if (!raceA || raceA.title !== 'B wins' || !raceB || raceB.title !== 'B wins') {
+      fail(`update-over-delete diverged: A=${raceA?.title} B=${raceB?.title}`);
+    }
+    console.log('E2E: update-wins-over-delete OK');
+
+    // 7. Delete-wins: A updates, B concurrently deletes newer.
+    await api(agentA, 'PATCH', `/tasks/${raceId}`, { title: 'A edit' });
+    await new Promise((r) => setTimeout(r, 100));
+    await api(agentB, 'DELETE', `/tasks/${raceId}`);
+    await agentA.sync.syncNow('e2e-a-upload-edit2');
+    await agentB.sync.syncNow('e2e-b-resolve-edit2');
+    await agentA.sync.syncNow('e2e-a-converge-edit2');
+    const goneA = await api(agentA, 'GET', `/tasks/${raceId}`);
+    const goneB = await api(agentB, 'GET', `/tasks/${raceId}`);
+    if (goneA.status !== 404 || goneB.status !== 404) {
+      fail(`delete-wins diverged: A=${goneA.status} B=${goneB.status}`);
+    }
+    console.log('E2E: delete-wins OK');
     console.log('E2E PASS');
   } finally {
     await agentA.stop();

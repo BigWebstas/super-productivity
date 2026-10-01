@@ -544,4 +544,47 @@ describe('sync-errors', () => {
       assert.equal(archive.getById('t1')?.title, 'doomed');
     });
   });
+
+  it('propagates a winning local delete as a dominating replacement', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+      store.dispatch(
+        TaskSharedActions.addTask({
+          task: createTask({
+            id: 't1',
+            title: 'doomed',
+            tagIds: [],
+            projectId: INBOX_PROJECT.id,
+          }),
+          workContextId: INBOX_PROJECT.id,
+          workContextType: WorkContextType.PROJECT,
+          isAddToBacklog: false,
+          isAddToBottom: true,
+        }),
+      );
+      await engine.syncNow('drain');
+      server.uploaded.length = 0;
+      const live = (
+        store.state[TASK_FEATURE_NAME] as unknown as {
+          entities: Record<string, Record<string, unknown>>;
+        }
+      ).entities['t1'];
+      store.dispatch(
+        TaskSharedActions.deleteTask({ task: { ...live, subTasks: [] } }) as never,
+      );
+      // Older concurrent remote update loses to the delete.
+      const remote = updateTaskOp('t1', 'resurrect', REMOTE_ID, { [REMOTE_ID]: 2 }, 1);
+      server.ops = [{ serverSeq: 3, op: remote, receivedAt: 1 }];
+
+      const result = await engine.syncNow('test');
+      assert.equal(result.conflicts, 1);
+      assert.equal(result.localWins, 1);
+      assert.equal(taskTitle(store, 't1'), undefined);
+      // The vehicle is a Delete with a clock dominating the remote side...
+      assert.equal(server.uploaded.length, 1);
+      // ...and the task stays deleted (no resurrection).
+      assert.equal(taskTitle(store, 't1'), undefined);
+    });
+  });
 });
