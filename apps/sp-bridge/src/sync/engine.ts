@@ -55,6 +55,11 @@ import {
 import { getPayloadKey } from '../../../../src/app/op-log/core/entity-registry';
 import { toLwwUpdateActionType } from '../../../../src/app/op-log/core/lww-update-action-types';
 import { getOpEntityIds } from '../../../../src/app/op-log/util/get-op-entity-ids.util';
+import { TaskSharedActions } from '../../../../src/app/root-store/meta/task-shared.actions';
+import type {
+  Task,
+  TaskWithSubTasks,
+} from '../../../../src/app/features/tasks/task.model';
 import { toEntityKey } from '../../../../src/app/op-log/util/entity-key.util';
 import {
   isAdapterEntity,
@@ -68,6 +73,7 @@ import {
   SUPER_SYNC_ERROR_CODES,
 } from '@sp/shared-schema';
 import { extractActionPayload } from '@sp/sync-core';
+import type { FileTaskArchive } from '../archive/archive-store';
 import type { AgentStore } from '../store/agent-store';
 import type { AgentState } from '../store/agent-state';
 import type { OpLogStore } from '../oplog/op-log-store';
@@ -145,6 +151,7 @@ interface EngineDeps {
   store: AgentStore;
   opLog: OpLogStore;
   provider: SuperSyncProvider;
+  archive: FileTaskArchive;
 }
 
 export class SyncEngine {
@@ -691,6 +698,7 @@ export class SyncEngine {
     // crash replays rather than loses it. Bulk dispatch emits no new ops
     // (remote replay never re-captures — pinned by agent-store.spec).
     opLog.appendSync(toApply);
+    this._mirrorArchiveSideEffects(toApply);
     // Synthesized winners enter the upload stream now that they are durable
     // (noteLocalOps refuses ids with no durable op behind them).
     opLog.noteLocalOps(synthesized.map((op) => op.id));
@@ -702,8 +710,68 @@ export class SyncEngine {
         isReplayFromEmptyBaseline: false,
       }) as never,
     );
+    // Fold every contributing clock into the store's own: without this the
+    // next LOCAL op carries a clock that omits history already applied, reads
+    // as concurrent on the server, and is rejected (the hydrate path does the
+    // same via applyRemoteState — pinned by the op-log-store hydrate tests).
+    store.applyRemoteState(
+      store.state,
+      toApply.map((op) => op.vectorClock),
+    );
     opLog.recordLocalClock(store.vectorClock);
     return toApply.length;
+  }
+
+  /**
+   * File-side half of remote archive ops, mirroring the app's
+   * `ArchiveOperationHandler` (which runs after reducers for remote actions):
+   * archived tasks land in `archive.json`, restored ones leave it, and updates
+   * to archived copies merge in. Local ops need nothing here - the REST layer
+   * writes the file around its own dispatches, exactly like ArchiveService.
+   */
+  private _mirrorArchiveSideEffects(ops: Operation[]): void {
+    const { archive } = this._deps;
+    for (const op of ops) {
+      const actionPayload = extractActionPayload(op.payload) as
+        | Record<string, unknown>
+        | undefined;
+      if (!actionPayload || typeof actionPayload !== 'object') {
+        continue;
+      }
+      if (op.actionType === TaskSharedActions.moveToArchive.type) {
+        const tasks = actionPayload['tasks'] as TaskWithSubTasks[] | undefined;
+        if (Array.isArray(tasks)) {
+          archive.putTasks(tasks);
+        }
+      } else if (op.actionType === TaskSharedActions.restoreTask.type) {
+        const task = actionPayload['task'] as Task | undefined;
+        const subTasks = actionPayload['subTasks'] as Task[] | undefined;
+        if (task?.id) {
+          archive.deleteTasks([
+            task.id,
+            ...(Array.isArray(subTasks) ? subTasks.map((t) => t.id) : []),
+          ]);
+        }
+      } else if (op.actionType === TaskSharedActions.updateTask.type) {
+        const task = actionPayload['task'] as
+          | { id: string; changes: Record<string, unknown> }
+          | undefined;
+        if (task?.id && task.changes && typeof task.changes === 'object') {
+          archive.patchArchived(task.id, task.changes);
+        }
+      } else if (op.actionType === TaskSharedActions.updateTasks.type) {
+        const updates = actionPayload['tasks'] as
+          | { id: string; changes: Record<string, unknown> }[]
+          | undefined;
+        if (Array.isArray(updates)) {
+          for (const update of updates) {
+            if (update?.id && update.changes && typeof update.changes === 'object') {
+              archive.patchArchived(update.id, update.changes);
+            }
+          }
+        }
+      }
+    }
   }
 
   /**

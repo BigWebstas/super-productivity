@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from '../test/harness';
 import { AgentStore } from '../store/agent-store';
+import { FileTaskArchive } from '../archive/archive-store';
 import { OpLogStore } from '../oplog/op-log-store';
 import { buildOperation } from '../oplog/operation-factory';
 import { SyncEngine } from './engine';
@@ -161,7 +162,12 @@ const updateTaskOp = (
 const setup = async (
   dir: string,
   server: StubServer,
-): Promise<{ store: AgentStore; opLog: OpLogStore; engine: SyncEngine }> => {
+): Promise<{
+  store: AgentStore;
+  opLog: OpLogStore;
+  engine: SyncEngine;
+  archive: FileTaskArchive;
+}> => {
   const opLog = OpLogStore.open(dir, {}, fixedId(LOCAL_ID));
   const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
   store.onOperations((ops) => {
@@ -169,8 +175,14 @@ const setup = async (
     opLog.noteLocalOps(ops.map((op) => op.id));
     opLog.recordLocalClock(store.vectorClock);
   });
-  const engine = new SyncEngine({ store, opLog, provider: stubProvider(server) });
-  return { store, opLog, engine };
+  const archive = new FileTaskArchive(dir);
+  const engine = new SyncEngine({
+    store,
+    opLog,
+    provider: stubProvider(server),
+    archive,
+  });
+  return { store, opLog, engine, archive };
 };
 
 const taskTitle = (store: AgentStore, id: string): string | undefined =>
@@ -240,6 +252,34 @@ describe('SyncEngine', () => {
       assert.equal(result.applied, 1);
       assert.equal(taskTitle(store, 'r1'), 'from server');
       assert.deepEqual(server.seqCalls, [1]);
+    });
+  });
+
+  it('folds applied remote clocks into the next local op', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const remote = addTaskOp('r1', 'from server', REMOTE_ID, { [REMOTE_ID]: 1 }, 1000);
+      server.ops = [{ serverSeq: 1, op: remote, receivedAt: 1000 }];
+      const { store, engine } = await setup(dir, server);
+      await engine.syncNow('download');
+
+      // Without the merge this carries only the local client and reads as
+      // concurrent with applied history on the server (which rejects it).
+      const [next] = store.dispatch(
+        TaskSharedActions.addTask({
+          task: createTask({
+            id: 't1',
+            title: 'after',
+            tagIds: [],
+            projectId: INBOX_PROJECT.id,
+          }),
+          workContextId: INBOX_PROJECT.id,
+          workContextType: WorkContextType.PROJECT,
+          isAddToBacklog: false,
+          isAddToBottom: true,
+        }),
+      );
+      assert.equal(next.vectorClock[REMOTE_ID], 1);
     });
   });
 
@@ -460,5 +500,48 @@ describe('sync-errors', () => {
     assert.equal(nextRetryDelayMs(2), 120_000);
     assert.equal(nextRetryDelayMs(3), 240_000);
     assert.equal(nextRetryDelayMs(10), 900_000);
+  });
+
+  it('applies a downloaded archive op to the archive file', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine, archive } = await setup(dir, server);
+      store.dispatch(
+        TaskSharedActions.addTask({
+          task: createTask({
+            id: 't1',
+            title: 'doomed',
+            tagIds: [],
+            projectId: INBOX_PROJECT.id,
+          }),
+          workContextId: INBOX_PROJECT.id,
+          workContextType: WorkContextType.PROJECT,
+          isAddToBacklog: false,
+          isAddToBottom: true,
+        }),
+      );
+      // Drain the local add so the archive op below meets no pending ops.
+      await engine.syncNow('drain');
+      const live = (
+        store.state[TASK_FEATURE_NAME] as unknown as {
+          entities: Record<string, Record<string, unknown>>;
+        }
+      ).entities['t1'];
+      const remote = buildOperation({
+        action: TaskSharedActions.moveToArchive({
+          tasks: [{ ...live, subTasks: [] }] as never,
+        }),
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 1 },
+        timestamp: Date.now(),
+      });
+      server.ops = [{ serverSeq: 2, op: remote, receivedAt: Date.now() }];
+
+      const result = await engine.syncNow('test');
+      assert.equal(result.applied, 1);
+      assert.equal(taskTitle(store, 't1'), undefined);
+      assert.equal(archive.hasTask('t1'), true);
+      assert.equal(archive.getById('t1')?.title, 'doomed');
+    });
   });
 });

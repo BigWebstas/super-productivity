@@ -66,4 +66,24 @@ export const installHeadlessGlobals = (): void => {
   if (!isAlreadyDefined('navigator')) {
     g['navigator'] = { userAgent: 'sp-bridge', language: 'en-US' };
   }
+  if (!isAlreadyDefined('document')) {
+    // Minimal stub so a BOXED reducer error degrades to a log instead of a
+    // crash: `reducerFailureGuardMetaReducer` keeps state alive by design
+    // (#10195), but its dev-mode reporter (`devError` → `alert`/`confirm`)
+    // touches `document` and would otherwise kill this process from a
+    // setTimeout after the guard already recovered. Only the error-dialog
+    // surface is stubbed — never layout, events, or rendering.
+    g['document'] = { activeElement: null };
+  }
+  const w = g['window'] as Record<string, unknown>;
+  if (w['alert'] === undefined) {
+    w['alert'] = (message: unknown): void => {
+      console.warn(`[headless alert] ${String(message)}`);
+    };
+  }
+  if (w['confirm'] === undefined) {
+    // Headless "don't throw": devError's "Throw an error?" prompt must answer
+    // no outside a developer's browser, or every boxed reducer error is fatal.
+    w['confirm'] = (): boolean => false;
+  }
 };

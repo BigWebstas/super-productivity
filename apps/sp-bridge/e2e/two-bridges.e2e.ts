@@ -125,6 +125,26 @@ const main = async (): Promise<void> => {
       fail(`diverged after concurrent edits: A=${finalA.title} B=${finalB.title}`);
     }
     console.log('E2E: concurrent edits converge OK');
+
+    // 5. A archives → both sync → B's archive file has it, active does not.
+    const archived = await api(agentA, 'POST', `/tasks/${taskId}/archive`);
+    if (archived.status !== 200) {
+      fail(`A archive returned ${archived.status}`);
+    }
+    await agentA.sync.syncNow('e2e-a-upload-archive');
+    await agentB.sync.syncNow('e2e-b-download-archive');
+    const bActive = await api(agentB, 'GET', `/tasks/${taskId}`);
+    const bArchived = await api(agentB, 'GET', '/tasks?source=archived');
+    if (bActive.status !== 404) {
+      fail('B still has the archived task active');
+    }
+    if (
+      (bArchived.body.data as { id: string }[]).some((t) => t.id !== taskId) ||
+      (bArchived.body.data as { id: string }[]).length !== 1
+    ) {
+      fail(`B archive mismatch: ${JSON.stringify(bArchived.body)}`);
+    }
+    console.log('E2E: archive replication OK');
     console.log('E2E PASS');
   } finally {
     await agentA.stop();

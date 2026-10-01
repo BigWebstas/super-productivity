@@ -247,6 +247,8 @@ src/
     operation-factory.ts persistent action → sync Operation
     op-log-store.ts      durable append-only log (JSONL) + meta
     hydrate.ts           replay the log through the app's bulk-apply action
+  archive/
+    archive-store.ts     file-backed archived-task projection (archive.json)
   sync/
     sync-config.ts       sync.json + SP_BRIDGE_SYNC_* env overrides
     credential-store.ts  file-backed SuperSync credential port
@@ -309,7 +311,10 @@ Ordered by dependency. Each step is independently testable. Steps 1–4 are done
    download → resolve → upload round.
 5. **Focus/timer slice** — `/focus` and `/status` timing need focus-mode state
    and a ticker.
-6. **Archive store** — `POST /tasks/:id/archive` and `?source=archived`.
+6. ~~**Archive store**~~ — `POST /tasks/:id/archive` and `POST /tasks/:id/restore`
+   over a file-backed `archive.json`, with `?source=archived` and `all`
+   reading it; remote archive/restore/update ops mirror the app's
+   `ArchiveOperationHandler` into the file during sync apply.
 7. ~~**Electron shell + Windows packaging**~~ — done for the shell and the
    installer: `src/electron/main.ts` (tray, status window, single-instance lock)
    and an electron-builder NSIS config built by CI. Still open: a settings UI for
@@ -481,3 +486,19 @@ error, which is the dangerous kind:
   it. Local winners now synthesize a dominating LWW update in the app's exact
   wire shape; losers leave the pending set but stay in history. Found by the
   two-bridge E2E, which diverged before this existed.
+- **Applied remote clocks must enter the store's own clock.** The engine
+  merged them into the op-log meta but not the store, so the first local op
+  after any download carried no remote causality, read as concurrent on the
+  server, and was rejected. Every post-download local edit was unsyncable.
+  Found by the archive leg of the two-bridge E2E (the first such op it ever
+  uploaded).
+- **A moveToArchive payload without `subTasks` crashes the reducer.** The
+  lifecycle reducer maps over `task.subTasks` unconditionally, so the route
+  normalizes childless tasks to `subTasks: []` (the action creator requires
+  the full payload for exactly this reason).
+- **A boxed reducer error kills a headless process.** The failure guard keeps
+  state alive by design, but its dev-mode reporter (`devError` →
+  `alert`/`confirm`) touches `document` and throws from a `setTimeout` after
+  the recovery — taking the whole bridge down over an already-contained
+  error. `headless-globals` stubs that dialog surface (alert → log,
+  confirm → false) and nothing else.

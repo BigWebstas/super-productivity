@@ -30,6 +30,7 @@ import {
   unsetCurrentTask,
   addSubTask,
 } from '../../../../src/app/features/tasks/store/task.actions';
+import type { TaskWithSubTasks } from '../../../../src/app/features/tasks/task.model';
 import { TaskSharedActions } from '../../../../src/app/root-store/meta/task-shared.actions';
 import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
 import { DEFAULT_TASK } from '../../../../src/app/features/tasks/task.model';
@@ -38,6 +39,7 @@ import { TODAY_TAG } from '../../../../src/app/features/tag/tag.const';
 import type { Task } from '../../../../src/app/features/tasks/task.model';
 import type { RestRequest, RestResponse, RouteHandler } from './server';
 import { errorBody, successBody } from './server';
+import type { FileTaskArchive } from '../archive/archive-store';
 import type { SyncCycleResult, SyncEngineStatus } from '../sync/engine';
 import { SyncBusyError, SyncNotConfiguredError } from '../sync/engine';
 import type { RedactedSyncConfig } from '../sync/sync-config';
@@ -193,6 +195,7 @@ const pickAllowedFields = (body: Json): Json => {
 
 export interface RouterDeps {
   store: AgentStore;
+  archive: FileTaskArchive;
   sync?: {
     status: () => SyncEngineStatus | { enabled: false };
     trigger: () => Promise<SyncCycleResult>;
@@ -207,6 +210,7 @@ export const createRouteHandler = ({
   store,
   sync = null,
   syncConfig = null,
+  archive,
 }: RouterDeps): RouteHandler => {
   const dispatch = (action: unknown): void => {
     store.dispatch(action as never);
@@ -229,10 +233,13 @@ export const createRouteHandler = ({
       );
     }
     const source = rawSource as 'active' | 'archived' | 'all';
-    // The agent keeps no separate archive store yet, so `archived` is
-    // reported as empty rather than silently answering with active tasks —
-    // answering with the wrong set is worse than answering with none.
-    const base: Task[] = source === 'archived' ? [] : Object.values(taskEntities(state));
+    const archivedTasks = Object.values(archive.load().entities);
+    const base: Task[] =
+      source === 'archived'
+        ? archivedTasks
+        : source === 'all'
+          ? [...Object.values(taskEntities(state)), ...archivedTasks]
+          : Object.values(taskEntities(state));
 
     let filtered = base;
     const queryText = getParam('query');
@@ -507,12 +514,68 @@ export const createRouteHandler = ({
       : error(500, 'INTERNAL_ERROR', 'Task disappeared after update');
   };
 
+  const handleArchiveTask = (taskId: string): RestResponse => {
+    const task = getTaskById(store.state, taskId);
+    if (!task) {
+      return error(404, 'TASK_NOT_FOUND', 'Task not found');
+    }
+    // File first, mirroring ArchiveService-before-dispatch: receivers rebuild
+    // their archive from the op payload, so the bytes must exist before the
+    // op does. A boxed dispatch rolls the write back below.
+    // `subTasks: []` is load-bearing, not tidiness: the lifecycle reducer maps
+    // over it unconditionally, and the action creator requires the full task
+    // payload for sync reliability.
+    const base = withSubTasks(store.state, task);
+    const withKids = { ...base, subTasks: base.subTasks ?? [] } as TaskWithSubTasks;
+    archive.putTasks([withKids]);
+    const ops = store.dispatch(
+      TaskSharedActions.moveToArchive({ tasks: [withKids] }) as never,
+    );
+    if (!ops.length) {
+      archive.deleteTasks([taskId, ...getSubTaskIds(task)]);
+      return error(500, 'INTERNAL_ERROR', 'Task was not archived');
+    }
+    return ok(200, { id: taskId, archived: true });
+  };
+
+  const handleRestoreTask = (taskId: string): RestResponse => {
+    const archived = archive.getById(taskId);
+    if (!archived) {
+      return error(404, 'TASK_NOT_FOUND', 'Task not found in archive');
+    }
+    const subTasks = getSubTaskIds(archived)
+      .map((id) => archive.getById(id))
+      .filter((t): t is Task => !!t);
+    // Dispatch first here (mirroring TaskService.restoreTask): the file
+    // delete only happens for state that actually came back.
+    const ops = store.dispatch(
+      TaskSharedActions.restoreTask({ task: archived, subTasks }) as never,
+    );
+    if (!ops.length) {
+      return error(500, 'INTERNAL_ERROR', 'Task was not restored');
+    }
+    archive.deleteTasks([taskId, ...subTasks.map((t) => t.id)]);
+    const restored = getTaskById(store.state, taskId);
+    return restored
+      ? ok(200, restored)
+      : error(500, 'INTERNAL_ERROR', 'Task disappeared after restore');
+  };
+
   const handleTaskRoutes = (
     method: string,
     segments: string[],
     request: RestRequest,
   ): RestResponse | null => {
     const taskId = segments[1] as string;
+    // Archive/restore resolve against different stores than the active-task
+    // routes below, so they run before the active lookup (a restore target is
+    // never active, and would 404 there unconditionally).
+    if (segments.length === 3 && segments[2] === 'archive' && method === 'POST') {
+      return handleArchiveTask(taskId);
+    }
+    if (segments.length === 3 && segments[2] === 'restore' && method === 'POST') {
+      return handleRestoreTask(taskId);
+    }
     const task = getTaskById(store.state, taskId);
     if (!task) {
       return error(404, 'TASK_NOT_FOUND', 'Task not found');

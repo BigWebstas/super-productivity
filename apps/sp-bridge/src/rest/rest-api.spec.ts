@@ -7,6 +7,7 @@ import { describe, it } from '../test/harness';
 import { AgentStore } from '../store/agent-store';
 import { createRouteHandler } from './router';
 import { LocalRestApiServer, parseBearerToken } from './server';
+import { FileTaskArchive } from '../archive/archive-store';
 import { SyncConfigValidationError } from '../sync/sync-config';
 import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
 import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
@@ -22,6 +23,7 @@ const withServer = async (
     server: LocalRestApiServer;
     store: AgentStore;
     dir: string;
+    archive: FileTaskArchive;
   }) => Promise<void>,
   overrides: {
     syncConfig?: {
@@ -32,11 +34,13 @@ const withServer = async (
 ): Promise<void> => {
   const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-rest-'));
   const store = new AgentStore('E_aaaaaa');
+  const archive = new FileTaskArchive(dir);
   const server = new LocalRestApiServer({
     dataDir: dir,
     port: 0,
     onRequest: createRouteHandler({
       store,
+      archive,
       syncConfig: overrides.syncConfig as never,
     }),
   });
@@ -77,7 +81,7 @@ const withServer = async (
   };
 
   try {
-    await fn({ request, server, store, dir });
+    await fn({ request, server, store, dir, archive });
   } finally {
     await server.close();
     rmSync(dir, { recursive: true, force: true });
@@ -476,12 +480,53 @@ describe('LocalRestApiServer routes', () => {
     });
   });
 
-  it('reports archived source as empty rather than returning active tasks', async () => {
+  it('archives a task and lists it under the archived source', async () => {
     await withServer(async ({ request }) => {
-      await request('POST', '/tasks', { body: { title: 'Active one' } });
-      const archived = await request('GET', '/tasks?source=archived');
-      // Better an honest empty set than the wrong one.
-      assert.equal(archived.body.data.length, 0);
+      const created = await request('POST', '/tasks', { body: { title: 'To archive' } });
+      const id = created.body.data.id;
+
+      const archived = await request('POST', `/tasks/${id}/archive`);
+      assert.equal(archived.status, 200);
+      assert.equal(archived.body.data.archived, true);
+
+      assert.equal((await request('GET', `/tasks/${id}`)).status, 404);
+      assert.equal((await request('GET', '/tasks')).body.data.length, 0);
+      const listed = await request('GET', '/tasks?source=archived');
+      assert.equal(listed.body.data.length, 1);
+      assert.equal(listed.body.data[0].title, 'To archive');
+      assert.equal((await request('GET', '/tasks?source=all')).body.data.length, 1);
+    });
+  });
+
+  it('archives a parent with its subtasks and restores the family', async () => {
+    await withServer(async ({ request, archive }) => {
+      const parent = await request('POST', '/tasks', { body: { title: 'Parent' } });
+      const parentId = parent.body.data.id;
+      const child = await request('POST', '/tasks', {
+        body: { title: 'Child', parentId },
+      });
+      const childId = child.body.data.id;
+
+      assert.equal((await request('POST', `/tasks/${parentId}/archive`)).status, 200);
+      assert.equal((await request('GET', `/tasks/${childId}`)).status, 404);
+      assert.ok(archive.hasTask(parentId));
+      assert.ok(archive.hasTask(childId));
+
+      const restored = await request('POST', `/tasks/${parentId}/restore`);
+      assert.equal(restored.status, 200);
+      assert.equal(restored.body.data.title, 'Parent');
+      assert.equal((await request('GET', `/tasks/${childId}`)).status, 200);
+      assert.equal(archive.hasTask(parentId), false);
+    });
+  });
+
+  it('404s archiving an unknown task and restoring a non-archived one', async () => {
+    await withServer(async ({ request }) => {
+      assert.equal((await request('POST', '/tasks/nope/archive')).status, 404);
+      const created = await request('POST', '/tasks', { body: { title: 'x' } });
+      const res = await request('POST', `/tasks/${created.body.data.id}/restore`);
+      assert.equal(res.status, 404);
+      assert.equal(res.body.error.code, 'TASK_NOT_FOUND');
     });
   });
 

@@ -21,6 +21,7 @@ import { OpLogStore } from './oplog/op-log-store';
 import { hydrateFromOpLog } from './oplog/hydrate';
 import { createRouteHandler } from './rest/router';
 import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
+import { FileTaskArchive } from './archive/archive-store';
 import { createBridgeSyncProvider } from './sync/provider';
 import { SyncBusyError, SyncEngine, SyncNotConfiguredError } from './sync/engine';
 import {
@@ -66,6 +67,7 @@ export const startAgent = async (
 
   const opLog = OpLogStore.open(dataDir, {}, generateClientId);
   const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
+  const archive = new FileTaskArchive(dataDir);
 
   // Assigned after hydration (the engine needs the store); the sink below
   // closes over the binding, not the value.
@@ -112,7 +114,7 @@ export const startAgent = async (
     if (isSyncConfigured(cfg)) {
       if (!sync) {
         const provider = createBridgeSyncProvider(dataDir);
-        sync = new SyncEngine({ store, opLog, provider });
+        sync = new SyncEngine({ store, opLog, provider, archive });
       } else {
         sync.bumpEpoch();
       }
@@ -143,6 +145,7 @@ export const startAgent = async (
     port,
     onRequest: createRouteHandler({
       store,
+      archive,
       sync: {
         status: () => {
           const engine: SyncEngine | null = sync;
