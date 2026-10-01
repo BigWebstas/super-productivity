@@ -272,7 +272,10 @@ export class SyncEngine {
    * Single-flight: a concurrent call waits for the running one instead of
    * interleaving two cursors over the same log.
    */
-  async syncNow(reason: string): Promise<SyncCycleResult> {
+  async syncNow(
+    reason: string,
+    options?: { forceFromSeq0?: boolean },
+  ): Promise<SyncCycleResult> {
     if (this._running) {
       // Single-flight without a queue: the running cycle already covers
       // everything pending now; the timer/debounce schedules the next one.
@@ -281,7 +284,7 @@ export class SyncEngine {
     const epoch = this._epoch;
     this._running = true;
     try {
-      const result = await this._cycle(reason, epoch);
+      const result = await this._cycle(reason, epoch, options?.forceFromSeq0 ?? false);
       this.lastSyncAt = Date.now();
       this.lastResult = result;
       this.lastError = null;
@@ -299,6 +302,15 @@ export class SyncEngine {
     } finally {
       this._running = false;
     }
+  }
+
+  /**
+   * Resyncs projects and tasks from the server by forcing download from seq 0.
+   * Reconciles all remote operations with local history without discarding
+   * un-uploaded local changes.
+   */
+  async resync(reason: string = 'manual-resync'): Promise<SyncCycleResult> {
+    return this.syncNow(reason, { forceFromSeq0: true });
   }
 
   /**
@@ -328,7 +340,11 @@ export class SyncEngine {
     return false;
   }
 
-  private async _cycle(reason: string, epoch: number): Promise<SyncCycleResult> {
+  private async _cycle(
+    reason: string,
+    epoch: number,
+    forceFromSeq0 = false,
+  ): Promise<SyncCycleResult> {
     const { provider } = this._deps;
     const result: SyncCycleResult = {
       downloaded: 0,
@@ -367,7 +383,13 @@ export class SyncEngine {
     // leaving the loser pending forever (a rejected op would otherwise be
     // re-uploaded - and re-rejected - on every future cycle).
     let conflictRejections = 0;
-    await this._downloadPhase(epoch, result, encryptKey, encryptionEnabled);
+    await this._downloadPhase(
+      epoch,
+      result,
+      encryptKey,
+      encryptionEnabled,
+      forceFromSeq0,
+    );
     conflictRejections = await this._uploadPhase(epoch, result, encryptKey);
     if (conflictRejections > 0) {
       console.log('[sync] Resolving rejected ops with an extra round');
@@ -391,9 +413,10 @@ export class SyncEngine {
     result: SyncCycleResult,
     encryptKey: string | undefined,
     encryptionEnabled: boolean,
+    forceFromSeq0 = false,
   ): Promise<void> {
     const { store, opLog, provider } = this._deps;
-    let sinceSeq = await provider.getLastServerSeq();
+    let sinceSeq = forceFromSeq0 ? 0 : await provider.getLastServerSeq();
     let latestSeq = sinceSeq;
     let hasResetForGap = false;
     const downloaded: ServerSyncOperation[] = [];

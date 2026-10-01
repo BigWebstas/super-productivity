@@ -29,6 +29,12 @@ export interface SettingsSaveInput {
   openAtLogin?: boolean;
 }
 
+export interface RendererSyncResult {
+  downloaded: number;
+  applied: number;
+  uploaded: number;
+}
+
 export interface RendererBridgeApi {
   getSettings: () => Promise<{ ok: true; settings: RendererSettings }>;
   saveSettings: (
@@ -37,6 +43,12 @@ export interface RendererBridgeApi {
   openSettings: () => Promise<void>;
   openLog: () => Promise<void>;
   readLog: () => Promise<string[]>;
+  triggerSync: () => Promise<
+    { ok: true; result: RendererSyncResult } | { ok: false; error: string }
+  >;
+  resync: () => Promise<
+    { ok: true; result: RendererSyncResult } | { ok: false; error: string }
+  >;
 }
 
 const api: RendererBridgeApi = {
@@ -46,6 +58,8 @@ const api: RendererBridgeApi = {
   openSettings: () => ipcRenderer.invoke('sp-bridge:open-settings'),
   openLog: () => ipcRenderer.invoke('sp-bridge:open-log'),
   readLog: () => ipcRenderer.invoke('sp-bridge:read-log'),
+  triggerSync: () => ipcRenderer.invoke('sp-bridge:sync'),
+  resync: () => ipcRenderer.invoke('sp-bridge:resync'),
 };
 
 contextBridge.exposeInMainWorld('spBridge', api);

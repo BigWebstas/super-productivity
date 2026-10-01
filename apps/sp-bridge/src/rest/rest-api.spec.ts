@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { describe, it } from '../test/harness';
 import { AgentStore } from '../store/agent-store';
-import { createRouteHandler } from './router';
+import { createRouteHandler, type RouterDeps } from './router';
 import { LocalRestApiServer, parseBearerToken } from './server';
 import { FileTaskArchive } from '../archive/archive-store';
+import { SyncBusyError } from '../sync/engine';
 import { SyncConfigValidationError } from '../sync/sync-config';
 import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
 import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
@@ -30,6 +31,7 @@ const withServer = async (
       get: () => Record<string, unknown>;
       update: (patch: unknown) => Record<string, unknown>;
     };
+    sync?: RouterDeps['sync'];
   } = {},
 ): Promise<void> => {
   const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-rest-'));
@@ -41,6 +43,7 @@ const withServer = async (
     onRequest: createRouteHandler({
       store,
       archive,
+      sync: overrides.sync,
       syncConfig: overrides.syncConfig as never,
     }),
   });
@@ -59,7 +62,7 @@ const withServer = async (
       token?: string | null;
       headers?: Record<string, string>;
     } = {},
-  ) => {
+  ): Promise<{ status: number; body: any; headers: Headers }> => {
     const headers: Record<string, string> = { ...opts.headers };
     const token = opts.token === undefined ? server.token : opts.token;
     if (token) {
@@ -624,6 +627,101 @@ describe('Sync config routes', () => {
         assert.equal(nonObject.status, 400);
       },
       { syncConfig },
+    );
+  });
+});
+
+describe('Sync trigger and resync routes', () => {
+  it('409s sync trigger and resync when sync is not configured', async () => {
+    await withServer(async ({ request }) => {
+      const resTrigger = await request('POST', '/sync/trigger');
+      assert.equal(resTrigger.status, 409);
+      assert.equal(resTrigger.body.error.code, 'SYNC_NOT_CONFIGURED');
+
+      const resResync = await request('POST', '/sync/resync');
+      assert.equal(resResync.status, 409);
+      assert.equal(resResync.body.error.code, 'SYNC_NOT_CONFIGURED');
+    });
+  });
+
+  it('triggers sync and passes forceFromSeq0 when requested', async () => {
+    const triggerCalls: { forceFromSeq0?: boolean }[] = [];
+    let resyncCalls = 0;
+    const syncResult = {
+      downloaded: 3,
+      applied: 2,
+      rejectedRemote: 0,
+      conflicts: 0,
+      localWins: 0,
+      remoteWins: 0,
+      uploaded: 1,
+      latestServerSeq: 5,
+    };
+    const sync = {
+      status: () => ({ enabled: true as const, running: false }) as never,
+      trigger: async (options?: { forceFromSeq0?: boolean }) => {
+        triggerCalls.push(options ?? {});
+        return syncResult;
+      },
+      resync: async () => {
+        resyncCalls++;
+        return syncResult;
+      },
+    };
+
+    await withServer(
+      async ({ request }) => {
+        const plain = await request('POST', '/sync/trigger');
+        assert.equal(plain.status, 200);
+        assert.deepEqual(plain.body.data, syncResult);
+        assert.equal(triggerCalls.length, 1);
+        assert.equal(triggerCalls[0].forceFromSeq0, false);
+
+        const withForce = await request('POST', '/sync/trigger', {
+          body: { forceFromSeq0: true },
+        });
+        assert.equal(withForce.status, 200);
+        assert.equal(triggerCalls.length, 2);
+        assert.equal(triggerCalls[1].forceFromSeq0, true);
+
+        const withResyncFlag = await request('POST', '/sync/trigger', {
+          body: { resync: true },
+        });
+        assert.equal(withResyncFlag.status, 200);
+        assert.equal(triggerCalls.length, 3);
+        assert.equal(triggerCalls[2].forceFromSeq0, true);
+
+        const resyncEndpoint = await request('POST', '/sync/resync');
+        assert.equal(resyncEndpoint.status, 200);
+        assert.deepEqual(resyncEndpoint.body.data, syncResult);
+        assert.equal(resyncCalls, 1);
+      },
+      { sync },
+    );
+  });
+
+  it('reports 429 when sync or resync is busy', async () => {
+    const sync = {
+      status: () => ({ enabled: true as const, running: true }) as never,
+      trigger: async () => {
+        throw new SyncBusyError();
+      },
+      resync: async () => {
+        throw new SyncBusyError();
+      },
+    };
+
+    await withServer(
+      async ({ request }) => {
+        const trig = await request('POST', '/sync/trigger');
+        assert.equal(trig.status, 429);
+        assert.equal(trig.body.error.code, 'SYNC_BUSY');
+
+        const res = await request('POST', '/sync/resync');
+        assert.equal(res.status, 429);
+        assert.equal(res.body.error.code, 'SYNC_BUSY');
+      },
+      { sync },
     );
   });
 });

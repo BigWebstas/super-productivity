@@ -24,7 +24,12 @@ import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
 import { FileTaskArchive } from './archive/archive-store';
 import { FocusTicker } from './focus/focus-ticker';
 import { createBridgeSyncProvider } from './sync/provider';
-import { SyncBusyError, SyncEngine, SyncNotConfiguredError } from './sync/engine';
+import {
+  SyncBusyError,
+  SyncEngine,
+  SyncNotConfiguredError,
+  type SyncCycleResult,
+} from './sync/engine';
 import {
   DEFAULT_SYNC_INTERVAL_MS,
   isSyncConfigured,
@@ -48,6 +53,8 @@ export interface StartedAgent {
    * POST /sync/config). Used by the desktop settings window.
    */
   updateSyncConfig: (patch: unknown) => RedactedSyncConfig;
+  triggerSync: (options?: { forceFromSeq0?: boolean }) => Promise<SyncCycleResult>;
+  resync: () => Promise<SyncCycleResult>;
   stop: () => Promise<void>;
 }
 
@@ -157,6 +164,24 @@ export const startAgent = async (
     return redactSyncConfig(saved);
   };
 
+  const triggerSync = async (options?: {
+    forceFromSeq0?: boolean;
+  }): Promise<SyncCycleResult> => {
+    const engine: SyncEngine | null = sync;
+    if (!engine) {
+      throw new SyncNotConfiguredError();
+    }
+    return engine.syncNow('manual', options);
+  };
+
+  const resync = async (): Promise<SyncCycleResult> => {
+    const engine: SyncEngine | null = sync;
+    if (!engine) {
+      throw new SyncNotConfiguredError();
+    }
+    return engine.resync('manual-resync');
+  };
+
   const server = new LocalRestApiServer({
     dataDir,
     port,
@@ -183,13 +208,8 @@ export const startAgent = async (
                 pendingUpload: opLog.pendingUpload().length,
               };
         },
-        trigger: () => {
-          const engine: SyncEngine | null = sync;
-          if (!engine) {
-            throw new SyncNotConfiguredError();
-          }
-          return engine.syncNow('manual');
-        },
+        trigger: (options) => triggerSync(options),
+        resync: () => resync(),
       },
       syncConfig: {
         get: () => redactSyncConfig(loadSyncConfig(dataDir)),
@@ -223,6 +243,8 @@ export const startAgent = async (
       return sync;
     },
     updateSyncConfig: (patch: unknown) => applySyncConfigPatch(patch),
+    triggerSync,
+    resync,
     stop: async () => {
       sync?.stop();
       focusTicker.stop();

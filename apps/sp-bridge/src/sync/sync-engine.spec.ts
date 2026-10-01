@@ -41,6 +41,7 @@ interface StubServer {
   ops: ServerSyncOperation[];
   uploaded: { opId: string; encrypted: boolean }[];
   seqCalls: number[];
+  downloadSinceSeqs: number[];
   key: string | undefined;
   ready: boolean;
   encryptionEnabled: boolean;
@@ -56,6 +57,7 @@ const makeStubServer = (overrides: Partial<StubServer> = {}): StubServer => ({
   ops: [],
   uploaded: [],
   seqCalls: [],
+  downloadSinceSeqs: [],
   key: 'test-key-0001',
   ready: true,
   encryptionEnabled: false,
@@ -94,6 +96,7 @@ const stubProvider = (server: StubServer): SuperSyncProvider => {
       server.seqCalls.push(next);
     },
     downloadOps: async (sinceSeq: number) => {
+      server.downloadSinceSeqs.push(sinceSeq);
       if (server.authFail) {
         throw new AuthFailSPError('stub 401');
       }
@@ -587,6 +590,64 @@ describe('sync-errors', () => {
       assert.equal(server.uploaded.length, 1);
       // ...and the task stays deleted (no resurrection).
       assert.equal(taskTitle(store, 't1'), undefined);
+    });
+  });
+
+  it('resyncs from seq 0 and reconciles remote history', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+      const remote1 = addTaskOp('r1', 'Remote 1', REMOTE_ID, { [REMOTE_ID]: 1 }, 100);
+      server.ops = [{ serverSeq: 1, op: remote1, receivedAt: 100 }];
+
+      // Initial sync advances cursor to 1
+      const res1 = await engine.syncNow('first-sync');
+      assert.equal(res1.downloaded, 1);
+      assert.equal(res1.applied, 1);
+      assert.equal(taskTitle(store, 'r1'), 'Remote 1');
+      assert.deepEqual(server.downloadSinceSeqs, [0]);
+
+      // Add another op on server at seq 2
+      const remote2 = addTaskOp('r2', 'Remote 2', REMOTE_ID, { [REMOTE_ID]: 2 }, 200);
+      server.ops.push({ serverSeq: 2, op: remote2, receivedAt: 200 });
+
+      // Normal sync fetches with sinceSeq: 1
+      const res2 = await engine.syncNow('second-sync');
+      assert.equal(res2.downloaded, 1);
+      assert.equal(res2.applied, 1);
+      assert.equal(taskTitle(store, 'r2'), 'Remote 2');
+      assert.deepEqual(server.downloadSinceSeqs, [0, 1]);
+
+      // Local change pending upload
+      store.dispatch(
+        TaskSharedActions.addTask({
+          task: createTask({
+            id: 'local1',
+            title: 'Local task',
+            tagIds: [],
+            projectId: INBOX_PROJECT.id,
+          }),
+          workContextId: INBOX_PROJECT.id,
+          workContextType: WorkContextType.PROJECT,
+          isAddToBacklog: false,
+          isAddToBottom: true,
+        }),
+      );
+
+      // Now call resync() -> forces download from sinceSeq: 0 and uploads local pending op
+      const res3 = await engine.resync('user-resync');
+      // Downloaded all ops starting from seq 0 (seq 1 and seq 2)
+      assert.equal(res3.downloaded, 2);
+      // Already known in opLog, deduplicated so applied: 0
+      assert.equal(res3.applied, 0);
+      // Uploaded pending local op
+      assert.equal(res3.uploaded, 1);
+      // Download call requested sinceSeq: 0
+      assert.deepEqual(server.downloadSinceSeqs, [0, 1, 0]);
+      // Both remote and local state are preserved
+      assert.equal(taskTitle(store, 'r1'), 'Remote 1');
+      assert.equal(taskTitle(store, 'r2'), 'Remote 2');
+      assert.equal(taskTitle(store, 'local1'), 'Local task');
     });
   });
 });

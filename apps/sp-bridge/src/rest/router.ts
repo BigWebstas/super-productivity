@@ -217,7 +217,8 @@ export interface RouterDeps {
   archive: FileTaskArchive;
   sync?: {
     status: () => SyncEngineStatus | { enabled: false };
-    trigger: () => Promise<SyncCycleResult>;
+    trigger: (options?: { forceFromSeq0?: boolean }) => Promise<SyncCycleResult>;
+    resync?: () => Promise<SyncCycleResult>;
   } | null;
   syncConfig?: {
     get: () => RedactedSyncConfig;
@@ -667,7 +668,38 @@ export const createRouteHandler = ({
         );
       }
       try {
-        return ok(200, await sync.trigger());
+        const body = isRecord(request.body) ? request.body : undefined;
+        const forceFromSeq0 =
+          body?.['forceFromSeq0'] === true || body?.['resync'] === true;
+        return ok(200, await sync.trigger({ forceFromSeq0 }));
+      } catch (triggerError) {
+        if (triggerError instanceof SyncBusyError) {
+          return error(429, 'SYNC_BUSY', 'A sync cycle is already running');
+        }
+        if (triggerError instanceof SyncNotConfiguredError) {
+          return error(
+            409,
+            'SYNC_NOT_CONFIGURED',
+            'SuperSync is not configured — add an accessToken to sync.json',
+          );
+        }
+        throw triggerError;
+      }
+    }
+
+    if (method === 'POST' && path === '/sync/resync') {
+      if (!sync) {
+        return error(
+          409,
+          'SYNC_NOT_CONFIGURED',
+          'SuperSync is not configured — add an accessToken to sync.json',
+        );
+      }
+      try {
+        const resyncFn = sync.resync
+          ? () => sync.resync!()
+          : () => sync.trigger({ forceFromSeq0: true });
+        return ok(200, await resyncFn());
       } catch (triggerError) {
         if (triggerError instanceof SyncBusyError) {
           return error(429, 'SYNC_BUSY', 'A sync cycle is already running');

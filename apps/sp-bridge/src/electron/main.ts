@@ -53,7 +53,7 @@ import {
 import { join } from 'node:path';
 import { startAgent, type StartedAgent } from '../main';
 import { loadSyncConfig, redactSyncConfig } from '../sync/sync-config';
-import type { RendererSettings, SettingsSaveInput } from './preload';
+import type { RendererSettings, RendererSyncResult, SettingsSaveInput } from './preload';
 
 let tray: Tray | null = null;
 let statusWindow: BrowserWindow | null = null;
@@ -129,7 +129,10 @@ const STATUS_HTML = (
       dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-all; }
       .warn { margin-top: 18px; padding: 10px; background: #fff4e5; border-radius: 4px; }
       .okmsg { margin-top: 18px; padding: 10px; background: #e8f5e9; border-radius: 4px; }
-      button { margin-top: 6px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+      .actions button { margin: 0; }
+      .feedback { margin-top: 10px; padding: 8px 10px; border-radius: 4px; display: none; }
+      .feedback.warn, .feedback.okmsg { display: block; }
     </style>
   </head>
   <body>
@@ -141,9 +144,14 @@ const STATUS_HTML = (
       <dt>Data</dt><dd>${escapeHtml(dataDir)}</dd>
     </dl>
     ${syncSummary}
-    <button id="copy">Copy API URL and token</button>
-    <button id="settings">Settings</button>
-    <button id="log">View log</button>
+    <div class="actions">
+      <button id="copy">Copy API URL and token</button>
+      <button id="settings">Settings</button>
+      <button id="log">View log</button>
+      <button id="sync">Sync now</button>
+      <button id="resync">Resync from server</button>
+    </div>
+    <div id="syncFeedback" class="feedback"></div>
     <script>
       const text = ${JSON.stringify(`${restUrl}\n${token}`)};
       document.getElementById('copy').addEventListener('click', () => {
@@ -158,6 +166,41 @@ const STATUS_HTML = (
       document.getElementById('log').addEventListener('click', () => {
         if (window.spBridge) {
           window.spBridge.openLog();
+        }
+      });
+      const setFeedback = (msg, isError) => {
+        const el = document.getElementById('syncFeedback');
+        if (el) {
+          el.textContent = msg;
+          el.className = 'feedback ' + (isError ? 'warn' : 'okmsg');
+        }
+      };
+      document.getElementById('sync').addEventListener('click', async () => {
+        if (!window.spBridge) return;
+        setFeedback('Syncing...', false);
+        const res = await window.spBridge.triggerSync();
+        if (res.ok) {
+          const d = res.result;
+          setFeedback(
+            'Sync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
+            false,
+          );
+        } else {
+          setFeedback('Sync failed: ' + res.error, true);
+        }
+      });
+      document.getElementById('resync').addEventListener('click', async () => {
+        if (!window.spBridge) return;
+        setFeedback('Resyncing from seq 0...', false);
+        const res = await window.spBridge.resync();
+        if (res.ok) {
+          const d = res.result;
+          setFeedback(
+            'Resync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
+            false,
+          );
+        } else {
+          setFeedback('Resync failed: ' + res.error, true);
         }
       });
     </script>
@@ -454,6 +497,28 @@ const buildTray = (): void => {
       { label: 'Show status', click: showStatusWindow },
       { label: 'Settings…', click: showSettingsWindow },
       { label: 'View log', click: showLogWindow },
+      { type: 'separator' },
+      {
+        label: 'Sync now',
+        click: () => {
+          if (agent) {
+            void agent.triggerSync().catch((err: unknown) => {
+              console.warn('[bridge] Tray sync failed', err);
+            });
+          }
+        },
+      },
+      {
+        label: 'Resync from server',
+        click: () => {
+          if (agent) {
+            void agent.resync().catch((err: unknown) => {
+              console.warn('[bridge] Tray resync failed', err);
+            });
+          }
+        },
+      },
+      { type: 'separator' },
       {
         label: 'Copy API URL + token',
         click: () => {
@@ -491,8 +556,8 @@ app.on('second-instance', showStatusWindow);
 /**
  * Minimal application menu: the default Electron menu would offer window and
  * help entries that make no sense for a tray-first background app, so only
- * File (settings, quit) and View (the three windows, devtools for
- * diagnostics) are kept. The log viewer lives under View.
+ * File (settings, quit), Sync (sync now, resync from server) and View (the three windows,
+ * devtools for diagnostics) are kept. The log viewer lives under View.
  */
 const buildAppMenu = (): void => {
   Menu.setApplicationMenu(
@@ -503,6 +568,32 @@ const buildAppMenu = (): void => {
           { label: 'Settings…', click: showSettingsWindow },
           { type: 'separator' },
           { role: 'quit' },
+        ],
+      },
+      {
+        label: 'Sync',
+        submenu: [
+          {
+            label: 'Sync now',
+            accelerator: 'CmdOrCtrl+Shift+S',
+            click: () => {
+              if (agent) {
+                void agent.triggerSync().catch((err: unknown) => {
+                  console.warn('[bridge] Menu sync failed', err);
+                });
+              }
+            },
+          },
+          {
+            label: 'Resync from server',
+            click: () => {
+              if (agent) {
+                void agent.resync().catch((err: unknown) => {
+                  console.warn('[bridge] Menu resync failed', err);
+                });
+              }
+            },
+          },
         ],
       },
       {
@@ -576,6 +667,60 @@ ipcMain.handle('sp-bridge:open-log', () => {
 });
 
 ipcMain.handle('sp-bridge:read-log', (): string[] => readLogTail(300));
+
+ipcMain.handle(
+  'sp-bridge:sync',
+  async (): Promise<
+    { ok: true; result: RendererSyncResult } | { ok: false; error: string }
+  > => {
+    if (!agent) {
+      return { ok: false, error: 'Agent is not running' };
+    }
+    try {
+      const res = await agent.triggerSync();
+      return {
+        ok: true,
+        result: {
+          downloaded: res.downloaded,
+          applied: res.applied,
+          uploaded: res.uploaded,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
+);
+
+ipcMain.handle(
+  'sp-bridge:resync',
+  async (): Promise<
+    { ok: true; result: RendererSyncResult } | { ok: false; error: string }
+  > => {
+    if (!agent) {
+      return { ok: false, error: 'Agent is not running' };
+    }
+    try {
+      const res = await agent.resync();
+      return {
+        ok: true,
+        result: {
+          downloaded: res.downloaded,
+          applied: res.applied,
+          uploaded: res.uploaded,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
+);
 
 // Anything that escapes the try/catch below used to be invisible: no window, no
 // tray, no dialog, no log. The console is teed to bridge.log (imported first
