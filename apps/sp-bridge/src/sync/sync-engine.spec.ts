@@ -10,13 +10,18 @@ import { buildOperation } from '../oplog/operation-factory';
 import { SyncEngine } from './engine';
 import { WorkContextType } from '../../../../src/app/features/work-context/work-context.model';
 import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
+import { PROJECT_FEATURE_NAME } from '../../../../src/app/features/project/store/project.reducer';
+import { TAG_FEATURE_NAME } from '../../../../src/app/features/tag/store/tag.reducer';
 import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
 import { TaskSharedActions } from '../../../../src/app/root-store/meta/task-shared.actions';
+import { addProject } from '../../../../src/app/features/project/store/project.actions';
+import { addTag } from '../../../../src/app/features/tag/store/tag.actions';
 import { createTask } from '../../../../src/app/features/tasks/task.test-helper';
 import { encrypt } from '@sp/sync-core';
 import { AuthFailSPError } from '@sp/sync-providers/errors';
 import { classifySyncError, nextRetryDelayMs } from './sync-errors';
-import type { Operation } from '../../../../src/app/op-log/core/operation.types';
+import { ActionType } from '../../../../src/app/op-log/core/action-types.enum';
+import { OpType, type Operation } from '../../../../src/app/op-log/core/operation.types';
 import type { SuperSyncProvider } from '@sp/sync-providers/super-sync';
 import type {
   OpUploadResponse,
@@ -638,8 +643,8 @@ describe('sync-errors', () => {
       const res3 = await engine.resync('user-resync');
       // Downloaded all ops starting from seq 0 (seq 1 and seq 2)
       assert.equal(res3.downloaded, 2);
-      // Already known in opLog, deduplicated so applied: 0
-      assert.equal(res3.applied, 0);
+      // Replayed all server ops onto clean baseline
+      assert.equal(res3.applied, 2);
       // Uploaded pending local op
       assert.equal(res3.uploaded, 1);
       // Download call requested sinceSeq: 0
@@ -648,6 +653,220 @@ describe('sync-errors', () => {
       assert.equal(taskTitle(store, 'r1'), 'Remote 1');
       assert.equal(taskTitle(store, 'r2'), 'Remote 2');
       assert.equal(taskTitle(store, 'local1'), 'Local task');
+    });
+  });
+
+  it('resyncs and reconstructs projects and tags from server ops while preserving local work', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+
+      const projOp = buildOperation({
+        action: addProject({
+          project: {
+            id: 'p1',
+            title: 'Remote Project 1',
+            isArchived: false,
+            isDone: false,
+            taskIds: [],
+            backlogTaskIds: [],
+            noteIds: [],
+          } as never,
+        }),
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 1 },
+        timestamp: 100,
+      });
+
+      const tagOp = buildOperation({
+        action: addTag({
+          tag: {
+            id: 't1',
+            title: 'Remote Tag 1',
+            taskIds: [],
+            created: 200,
+          } as never,
+        }),
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 2 },
+        timestamp: 200,
+      });
+
+      const taskOp = addTaskOp(
+        'r1',
+        'Remote Task in P1',
+        REMOTE_ID,
+        { [REMOTE_ID]: 3 },
+        300,
+      );
+
+      server.ops = [
+        { serverSeq: 1, op: projOp, receivedAt: 100 },
+        { serverSeq: 2, op: tagOp, receivedAt: 200 },
+        { serverSeq: 3, op: taskOp, receivedAt: 300 },
+      ];
+
+      // Initial sync
+      const res1 = await engine.syncNow('initial');
+      assert.equal(res1.downloaded, 3);
+      assert.equal(res1.applied, 3);
+
+      const pState1 = (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      const tState1 = (
+        store.state[TAG_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      assert.equal(pState1['p1']?.title, 'Remote Project 1');
+      assert.equal(tState1['t1']?.title, 'Remote Tag 1');
+
+      // Local pending change
+      store.dispatch(
+        TaskSharedActions.addTask({
+          task: createTask({
+            id: 'local1',
+            title: 'Local task in P1',
+            tagIds: ['t1'],
+            projectId: 'p1',
+          }),
+          workContextId: 'p1',
+          workContextType: WorkContextType.PROJECT,
+          isAddToBacklog: false,
+          isAddToBottom: true,
+        }),
+      );
+
+      // Trigger full resync
+      const res2 = await engine.resync('user-resync');
+      assert.equal(res2.downloaded, 3);
+      assert.equal(res2.applied, 3);
+      assert.equal(res2.uploaded, 1);
+
+      // Verify projects, tags, and tasks are all present
+      const pState2 = (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      const tState2 = (
+        store.state[TAG_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      assert.equal(pState2['p1']?.title, 'Remote Project 1');
+      assert.equal(tState2['t1']?.title, 'Remote Tag 1');
+      assert.equal(taskTitle(store, 'r1'), 'Remote Task in P1');
+      assert.equal(taskTitle(store, 'local1'), 'Local task in P1');
+    });
+  });
+
+  it('resyncs full-state SYNC_IMPORT operations reconstructing projects and tags', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+
+      const syncImportOp: Operation = {
+        id: 'import-op-1',
+        actionType: ActionType.LOAD_ALL_DATA,
+        opType: OpType.SyncImport,
+        entityType: 'ALL',
+        payload: {
+          project: {
+            ids: ['p_imported'],
+            entities: {
+              p_imported: { id: 'p_imported', title: 'Imported Project' },
+            },
+          },
+          tag: {
+            ids: ['t_imported'],
+            entities: {
+              t_imported: { id: 't_imported', title: 'Imported Tag' },
+            },
+          },
+          task: {
+            ids: [],
+            entities: {},
+          },
+        },
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 1 },
+        timestamp: 100,
+        schemaVersion: 1,
+      };
+
+      server.ops = [{ serverSeq: 1, op: syncImportOp, receivedAt: 100 }];
+
+      const res = await engine.resync('import-resync');
+      assert.equal(res.downloaded, 1);
+      assert.equal(res.applied, 1);
+
+      const projects = (
+        store.state[PROJECT_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      const tags = (
+        store.state[TAG_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      assert.equal(projects['p_imported']?.title, 'Imported Project');
+      assert.equal(tags['t_imported']?.title, 'Imported Tag');
+    });
+  });
+
+  it('does not drop concurrent entity creations as superseded when local entity state is undefined', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, engine } = await setup(dir, server);
+
+      // Local op on task1 advances client clock
+      store.dispatch(
+        TaskSharedActions.addTask({
+          task: createTask({
+            id: 't-local',
+            title: 'Local task',
+            tagIds: [],
+            projectId: INBOX_PROJECT.id,
+          }),
+          workContextId: INBOX_PROJECT.id,
+          workContextType: WorkContextType.PROJECT,
+          isAddToBacklog: false,
+          isAddToBottom: true,
+        }),
+      );
+      await engine.syncNow('drain');
+
+      // Server op creates tag t1 concurrently (remote clock does not know local clock)
+      const remoteTag = buildOperation({
+        action: addTag({
+          tag: {
+            id: 't-remote',
+            title: 'Remote Tag',
+            taskIds: [],
+            created: 50,
+          } as never,
+        }),
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 1 },
+        timestamp: 50,
+      });
+      server.ops = [{ serverSeq: 2, op: remoteTag, receivedAt: 50 }];
+
+      const res = await engine.syncNow('download-remote-tag');
+      assert.equal(res.applied, 1);
+      assert.equal(res.rejectedRemote, 0);
+
+      const tags = (
+        store.state[TAG_FEATURE_NAME] as unknown as {
+          entities: Record<string, { title: string }>;
+        }
+      ).entities;
+      assert.equal(tags['t-remote']?.title, 'Remote Tag');
     });
   });
 });

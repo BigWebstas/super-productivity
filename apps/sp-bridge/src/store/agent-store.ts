@@ -166,6 +166,21 @@ export class AgentStore {
     this._notify();
   }
 
+  /**
+   * Resets the store state and vector clock. Used during full resync from server.
+   */
+  reset(initialState?: AgentState, initialVectorClock?: Record<string, number>): void {
+    this._captured = [];
+    this._vectorClock = initialVectorClock
+      ? { ...initialVectorClock }
+      : { [this._clientId]: 0 };
+    if (!(this._clientId in this._vectorClock)) {
+      this._vectorClock[this._clientId] = 0;
+    }
+    this._state = initialState ?? createInitialAgentState();
+    this._notify();
+  }
+
   private _notify(): void {
     for (const listener of this._listeners) {
       listener(this._state);

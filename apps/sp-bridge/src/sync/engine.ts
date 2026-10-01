@@ -75,7 +75,7 @@ import {
 import { extractActionPayload } from '@sp/sync-core';
 import type { FileTaskArchive } from '../archive/archive-store';
 import type { AgentStore } from '../store/agent-store';
-import type { AgentState } from '../store/agent-state';
+import { createInitialAgentState, type AgentState } from '../store/agent-state';
 import type { OpLogStore } from '../oplog/op-log-store';
 import { decryptDownloadedOperations, encryptOperationsForUpload } from './crypto';
 import { createOperationId } from '../oplog/operation-factory';
@@ -118,6 +118,30 @@ const isDeleteWinsAction = (op: Operation): boolean => {
     actionPayload['isProjectDeleteWins'] === true &&
     op.entityId === actionPayload['projectId']
   );
+};
+
+/**
+ * Checks whether an entity has been deleted or archived in retained local history.
+ */
+const hasLocalDeleteOrArchive = (
+  ops: readonly Operation[],
+  entityType: string,
+  entityId: string,
+): boolean => {
+  return ops.some((op) => {
+    if (op.entityType !== entityType && !(entityType === 'TASK' && isArchiveAction(op))) {
+      return false;
+    }
+    const ids = getOpEntityIds(op);
+    if (!ids.includes(entityId)) {
+      return false;
+    }
+    return (
+      op.opType === OpType.Delete ||
+      isArchiveAction(op) ||
+      op.actionType === ActionType.TASK_SHARED_DELETE_PROJECT
+    );
+  });
 };
 
 export interface SyncCycleResult {
@@ -284,7 +308,9 @@ export class SyncEngine {
     const epoch = this._epoch;
     this._running = true;
     try {
-      const result = await this._cycle(reason, epoch, options?.forceFromSeq0 ?? false);
+      const result = options?.forceFromSeq0
+        ? await this._resyncCycle(reason, epoch)
+        : await this._cycle(reason, epoch);
       this.lastSyncAt = Date.now();
       this.lastResult = result;
       this.lastError = null;
@@ -305,9 +331,9 @@ export class SyncEngine {
   }
 
   /**
-   * Resyncs projects and tasks from the server by forcing download from seq 0.
-   * Reconciles all remote operations with local history without discarding
-   * un-uploaded local changes.
+   * Resyncs projects and tasks from the server by downloading from seq 0,
+   * resetting the store to clean initial state, replaying the complete server history,
+   * and preserving any un-uploaded local changes.
    */
   async resync(reason: string = 'manual-resync'): Promise<SyncCycleResult> {
     return this.syncNow(reason, { forceFromSeq0: true });
@@ -340,11 +366,163 @@ export class SyncEngine {
     return false;
   }
 
-  private async _cycle(
-    reason: string,
-    epoch: number,
-    forceFromSeq0 = false,
-  ): Promise<SyncCycleResult> {
+  private async _resyncCycle(reason: string, epoch: number): Promise<SyncCycleResult> {
+    const { store, opLog, provider } = this._deps;
+    const result: SyncCycleResult = {
+      downloaded: 0,
+      applied: 0,
+      rejectedRemote: 0,
+      conflicts: 0,
+      localWins: 0,
+      remoteWins: 0,
+      uploaded: 0,
+      latestServerSeq: 0,
+    };
+
+    await this._credentialsChanged();
+    this._assertEpoch(epoch);
+    const cfgForExpiry =
+      typeof provider.privateCfg?.load === 'function'
+        ? await provider.privateCfg.load().catch(() => null)
+        : null;
+    this._tokenExpiresAt = cfgForExpiry?.expiresAt ?? null;
+    if (!(await provider.isReady())) {
+      console.log('[sync] Not configured yet — skipping resync cycle');
+      return result;
+    }
+    const encryptKey = (await provider.getEncryptKey?.()) ?? undefined;
+    const encryptionEnabled = (await provider.isEncryptionEnabled?.()) ?? false;
+    if (provider.isEncryptionMandatory && !encryptKey) {
+      throw new Error(
+        '[sync] Encryption is mandatory for SuperSync but no key is configured',
+      );
+    }
+    this._assertEpoch(epoch);
+
+    // 1. Snapshot pending local operations to preserve un-uploaded work
+    const pendingLocal = [...opLog.pendingUpload()];
+
+    // 2. Download all operations from the server starting at sequence 0
+    let sinceSeq = 0;
+    let latestSeq = 0;
+    const downloaded: ServerSyncOperation[] = [];
+    for (let i = 0; i < MAX_DOWNLOAD_ITERATIONS; i++) {
+      this._assertEpoch(epoch);
+      const response = await provider.downloadOps(
+        sinceSeq,
+        store.clientId,
+        DOWNLOAD_PAGE_SIZE,
+      );
+      latestSeq = Math.max(latestSeq, response.latestSeq);
+      if (response.ops.length === 0) {
+        if (response.hasMore) {
+          throw new Error('[sync] Empty page with hasMore=true - aborting');
+        }
+        break;
+      }
+      downloaded.push(...response.ops);
+      if (!response.hasMore) {
+        break;
+      }
+      sinceSeq = Math.max(...response.ops.map((o) => o.serverSeq));
+      if (i === MAX_DOWNLOAD_ITERATIONS - 1) {
+        throw new Error('[sync] Download did not terminate - aborting');
+      }
+    }
+    result.downloaded = downloaded.length;
+    result.latestServerSeq = latestSeq;
+
+    // 3. Decrypt downloaded operations
+    let decrypted: Operation[] = [];
+    if (downloaded.length) {
+      const serverOps = downloaded.map((srv) => srv.op);
+      const { ops: decryptedOps, failedOpIds } = await decryptDownloadedOperations(
+        serverOps,
+        encryptKey,
+      );
+      if (failedOpIds.length) {
+        throw new Error(
+          `[sync] ${failedOpIds.length} downloaded op(s) could not be decrypted - holding cursor`,
+        );
+      }
+      if (encryptionEnabled) {
+        const plaintext = decryptedOps.filter(
+          (op) => !(op as unknown as SyncOperation).isPayloadEncrypted,
+        );
+        if (plaintext.length) {
+          throw new Error(
+            `[sync] ${plaintext.length} plaintext op(s) on an encrypted account - refusing`,
+          );
+        }
+      }
+      decrypted = decryptedOps;
+    }
+    this._assertEpoch(epoch);
+
+    // 4. Reset store to clean initial state and replay complete server history
+    store.reset(createInitialAgentState(), { [store.clientId]: 0 });
+    if (decrypted.length) {
+      this._mirrorArchiveSideEffects(decrypted);
+      store.dispatch(
+        bulkApplyOperations({
+          operations: [...decrypted],
+          localClientId: store.clientId,
+          isReplayFromEmptyBaseline: true,
+        }) as never,
+      );
+    }
+    result.applied = decrypted.length;
+
+    // 5. Re-apply any preserved local pending ops not yet accepted by the server
+    const serverOpIds = new Set(decrypted.map((op) => op.id));
+    const unacceptedPending = pendingLocal.filter((op) => !serverOpIds.has(op.id));
+    if (unacceptedPending.length) {
+      this._mirrorArchiveSideEffects(unacceptedPending);
+      store.dispatch(
+        bulkApplyOperations({
+          operations: [...unacceptedPending],
+          localClientId: store.clientId,
+          isReplayFromEmptyBaseline: false,
+        }) as never,
+      );
+    }
+
+    // 6. Fold all contributing vector clocks into store
+    const allClocks = [
+      ...decrypted.map((op) => op.vectorClock),
+      ...unacceptedPending.map((op) => op.vectorClock),
+    ];
+    store.applyRemoteState(store.state, allClocks);
+
+    // 7. Atomically reset durable op log with complete server history + pending local ops
+    const finalOps = [...decrypted, ...unacceptedPending];
+    opLog.resetWithOps(
+      finalOps,
+      unacceptedPending.map((op) => op.id),
+    );
+    opLog.recordLocalClock(store.vectorClock);
+
+    // 8. Update server cursor
+    await provider.setLastServerSeq(latestSeq);
+
+    // 9. Upload any preserved local pending ops
+    let conflictRejections = await this._uploadPhase(epoch, result, encryptKey);
+    if (conflictRejections > 0) {
+      console.log('[sync] Resolving rejected ops after resync');
+      await this._downloadPhase(epoch, result, encryptKey, encryptionEnabled);
+      conflictRejections = await this._uploadPhase(epoch, result, encryptKey);
+      if (conflictRejections > 0) {
+        console.warn(
+          '[sync] Ops still rejected after resync resolve round; retrying next cycle',
+          { count: conflictRejections },
+        );
+      }
+    }
+
+    return result;
+  }
+
+  private async _cycle(reason: string, epoch: number): Promise<SyncCycleResult> {
     const { provider } = this._deps;
     const result: SyncCycleResult = {
       downloaded: 0,
@@ -383,13 +561,7 @@ export class SyncEngine {
     // leaving the loser pending forever (a rejected op would otherwise be
     // re-uploaded - and re-rejected - on every future cycle).
     let conflictRejections = 0;
-    await this._downloadPhase(
-      epoch,
-      result,
-      encryptKey,
-      encryptionEnabled,
-      forceFromSeq0,
-    );
+    await this._downloadPhase(epoch, result, encryptKey, encryptionEnabled);
     conflictRejections = await this._uploadPhase(epoch, result, encryptKey);
     if (conflictRejections > 0) {
       console.log('[sync] Resolving rejected ops with an extra round');
@@ -413,10 +585,9 @@ export class SyncEngine {
     result: SyncCycleResult,
     encryptKey: string | undefined,
     encryptionEnabled: boolean,
-    forceFromSeq0 = false,
   ): Promise<void> {
     const { store, opLog, provider } = this._deps;
-    let sinceSeq = forceFromSeq0 ? 0 : await provider.getLastServerSeq();
+    let sinceSeq = await provider.getLastServerSeq();
     let latestSeq = sinceSeq;
     let hasResetForGap = false;
     const downloaded: ServerSyncOperation[] = [];
@@ -622,14 +793,19 @@ export class SyncEngine {
           // crossing that needs LWW against retained history (#9073).
           const current = readEntityState(store.state, remoteOp.entityType, entityId);
           if (current === undefined || current === null) {
-            superseded = true;
-            break;
+            if (hasLocalDeleteOrArchive(opLog.all(), remoteOp.entityType, entityId)) {
+              superseded = true;
+              break;
+            }
           }
           const retained = (frontierByEntityOps(opLog.all()).get(key) ?? []).filter(
             (local) =>
               compareVectorClocks(local.vectorClock, remoteOp.vectorClock) ===
               VectorClockComparison.CONCURRENT,
           );
+          if (retained.length === 0) {
+            break;
+          }
           conflicts.push({
             entityType: remoteOp.entityType,
             entityId,

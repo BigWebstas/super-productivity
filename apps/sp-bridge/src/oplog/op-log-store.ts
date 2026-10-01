@@ -372,6 +372,35 @@ export class OpLogStore {
   }
 
   /**
+   * Resets the operation log with a complete set of operations, updating
+   * both ops.jsonl and meta.json atomically. Used during full resync from server.
+   */
+  resetWithOps(ops: Operation[], pendingLocalOpIds: string[] = []): void {
+    if (this._appendFd !== null) {
+      closeSync(this._appendFd);
+      this._appendFd = null;
+    }
+
+    const payload = ops.length ? ops.map((op) => `${JSON.stringify(op)}\n`).join('') : '';
+    const tmpOpsPath = `${this._opsPath}.tmp`;
+    writeFileSync(tmpOpsPath, payload, 'utf8');
+    renameSync(tmpOpsPath, this._opsPath);
+
+    this._ops = [...ops];
+
+    const mergedClock: Record<string, number> = { [this._meta.clientId]: 0 };
+    for (const op of ops) {
+      for (const [clientId, counter] of Object.entries(op.vectorClock)) {
+        mergedClock[clientId] = Math.max(mergedClock[clientId] ?? 0, counter);
+      }
+    }
+    this._meta.vectorClock = mergedClock;
+    this._meta.pendingLocalOpIds = [...pendingLocalOpIds];
+    this._reconcilePending();
+    this._writeMeta();
+  }
+
+  /**
    * Writes meta.json atomically (temp file + rename).
    *
    * A half-written meta.json would be read back as "no clientId" on the next
