@@ -37,7 +37,7 @@ import '../platform/agent-log-file';
 import '../platform/headless-globals-install';
 import '@angular/compiler';
 
-import { agentLogPath } from '../platform/agent-log-file';
+import { agentLogPath, readLogTail } from '../platform/agent-log-file';
 
 import {
   app,
@@ -58,6 +58,7 @@ import type { RendererSettings, SettingsSaveInput } from './preload';
 let tray: Tray | null = null;
 let statusWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
+let logWindow: BrowserWindow | null = null;
 let agent: StartedAgent | null = null;
 
 const preloadPath = (): string => join(__dirname, 'preload.js');
@@ -142,6 +143,7 @@ const STATUS_HTML = (
     ${syncSummary}
     <button id="copy">Copy API URL and token</button>
     <button id="settings">Settings</button>
+    <button id="log">View log</button>
     <script>
       const text = ${JSON.stringify(`${restUrl}\n${token}`)};
       document.getElementById('copy').addEventListener('click', () => {
@@ -151,6 +153,11 @@ const STATUS_HTML = (
       document.getElementById('settings').addEventListener('click', () => {
         if (window.spBridge) {
           window.spBridge.openSettings();
+        }
+      });
+      document.getElementById('log').addEventListener('click', () => {
+        if (window.spBridge) {
+          window.spBridge.openLog();
         }
       });
     </script>
@@ -264,6 +271,121 @@ const showSettingsWindow = (): void => {
   });
 };
 
+const LOG_HTML = (): string => `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>SP Bridge Log</title>
+    <style>
+      html, body { height: 100%; margin: 0; padding: 0; }
+      body {
+        font: 12px/1.5 ui-monospace, monospace;
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+        color: #111;
+      }
+      #bar {
+        padding: 8px 12px;
+        border-bottom: 1px solid #ddd;
+        font-family: system-ui, sans-serif;
+        font-size: 13px;
+        background: #f8f8f8;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #bar label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+      #note { color: #666; font-size: 12px; margin-left: auto; }
+      #log { flex: 1; overflow-y: auto; margin: 0; padding: 8px 12px; white-space: pre-wrap; word-break: break-all; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #1e1e1e; color: #d4d4d4; }
+        #bar { border-bottom-color: #333; background: #252526; color: #eee; }
+        #note { color: #aaa; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <label><input id="pause" type="checkbox" /> Pause</label>
+      <button id="refreshBtn">Refresh</button>
+      <span id="note"></span>
+    </div>
+    <pre id="log"></pre>
+    <script>
+      const el = document.getElementById('log');
+      const note = document.getElementById('note');
+      const pauseBox = document.getElementById('pause');
+      const api = window.spBridge;
+      let currentText = null;
+      const render = (lines) => {
+        const next = lines.length ? lines.join('\\n') : '(log is empty)';
+        const countMsg = lines.length + ' line' + (lines.length === 1 ? '' : 's');
+        note.textContent = pauseBox.checked ? 'Paused (' + countMsg + ')' : countMsg;
+        if (next === currentText) {
+          return;
+        }
+        const pinned = currentText === null || (el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+        currentText = next;
+        el.textContent = next;
+        if (pinned) {
+          el.scrollTop = el.scrollHeight;
+        }
+      };
+      const refresh = () => {
+        if (!api) {
+          return;
+        }
+        api.readLog().then(render).catch((error) => {
+          note.textContent = String((error && error.message) || error);
+        });
+      };
+      pauseBox.addEventListener('change', () => {
+        if (!pauseBox.checked) {
+          refresh();
+        } else if (currentText !== null) {
+          note.textContent = 'Paused (' + note.textContent.replace(/^Paused \\(/, '').replace(/\\)$/, '') + ')';
+        }
+      });
+      document.getElementById('refreshBtn').addEventListener('click', refresh);
+      if (!api) {
+        note.textContent = 'Log bridge is unavailable in this window.';
+      } else {
+        refresh();
+        setInterval(() => {
+          if (!pauseBox.checked) {
+            refresh();
+          }
+        }, 2000);
+      }
+    </script>
+  </body>
+</html>`;
+
+const showLogWindow = (): void => {
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.focus();
+    return;
+  }
+  logWindow = new BrowserWindow({
+    width: 760,
+    height: 480,
+    title: 'SP Bridge Log',
+    webPreferences: {
+      // No Node in the renderer; the preload exposes exactly the log reader.
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      preload: preloadPath(),
+    },
+  });
+  logWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOG_HTML())}`);
+  logWindow.on('closed', () => {
+    logWindow = null;
+  });
+};
+
 /**
  * Live sync summary for the status window. Reads the engine at open time, so
  * the window never shows a stale build banner: unconfigured bridges get the
@@ -331,6 +453,7 @@ const buildTray = (): void => {
     Menu.buildFromTemplate([
       { label: 'Show status', click: showStatusWindow },
       { label: 'Settings…', click: showSettingsWindow },
+      { label: 'View log', click: showLogWindow },
       {
         label: 'Copy API URL + token',
         click: () => {
@@ -364,6 +487,37 @@ const buildTray = (): void => {
 };
 
 app.on('second-instance', showStatusWindow);
+
+/**
+ * Minimal application menu: the default Electron menu would offer window and
+ * help entries that make no sense for a tray-first background app, so only
+ * File (settings, quit) and View (the three windows, devtools for
+ * diagnostics) are kept. The log viewer lives under View.
+ */
+const buildAppMenu = (): void => {
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: 'File',
+        submenu: [
+          { label: 'Settings…', click: showSettingsWindow },
+          { type: 'separator' },
+          { role: 'quit' },
+        ],
+      },
+      {
+        label: 'View',
+        submenu: [
+          { label: 'Status', click: showStatusWindow },
+          { label: 'Log', accelerator: 'CmdOrCtrl+L', click: showLogWindow },
+          { type: 'separator' },
+          { role: 'reload' },
+          { role: 'toggleDevTools' },
+        ],
+      },
+    ]),
+  );
+};
 
 /**
  * Settings IPC: the renderer's whole world is `window.spBridge` (see
@@ -417,6 +571,12 @@ ipcMain.handle('sp-bridge:open-settings', () => {
   showSettingsWindow();
 });
 
+ipcMain.handle('sp-bridge:open-log', () => {
+  showLogWindow();
+});
+
+ipcMain.handle('sp-bridge:read-log', (): string[] => readLogTail(300));
+
 // Anything that escapes the try/catch below used to be invisible: no window, no
 // tray, no dialog, no log. The console is teed to bridge.log (imported first
 // above), so recording it here is enough to make the failure diagnosable.
@@ -442,6 +602,7 @@ app.whenReady().then(async () => {
     return;
   }
   buildTray();
+  buildAppMenu();
   showStatusWindow();
 
   app.on('activate', () => {

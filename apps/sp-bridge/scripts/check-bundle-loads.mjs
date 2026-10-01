@@ -40,7 +40,7 @@ const electronStub = {
     quit: noop,
   },
   BrowserWindow: class {},
-  Menu: { buildFromTemplate: () => ({}) },
+  Menu: { buildFromTemplate: () => ({}), setApplicationMenu: noop },
   Tray: class {},
   clipboard: {},
   dialog: { showErrorBox: noop },

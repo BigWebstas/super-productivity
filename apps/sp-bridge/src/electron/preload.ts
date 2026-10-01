@@ -35,6 +35,8 @@ export interface RendererBridgeApi {
     input: SettingsSaveInput,
   ) => Promise<{ ok: true; settings: RendererSettings } | { ok: false; error: string }>;
   openSettings: () => Promise<void>;
+  openLog: () => Promise<void>;
+  readLog: () => Promise<string[]>;
 }
 
 const api: RendererBridgeApi = {
@@ -42,6 +44,8 @@ const api: RendererBridgeApi = {
   saveSettings: (input: SettingsSaveInput) =>
     ipcRenderer.invoke('sp-bridge:save-settings', input),
   openSettings: () => ipcRenderer.invoke('sp-bridge:open-settings'),
+  openLog: () => ipcRenderer.invoke('sp-bridge:open-log'),
+  readLog: () => ipcRenderer.invoke('sp-bridge:read-log'),
 };
 
 contextBridge.exposeInMainWorld('spBridge', api);

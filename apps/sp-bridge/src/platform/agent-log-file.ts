@@ -19,7 +19,7 @@
  *     logger, so every filesystem call is guarded and failures fall back to
  *     silently doing nothing.
  */
-import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BRIDGE_LOG_FILENAME, defaultDataDir, migrateLegacyDataDir } from './data-dir';
 
@@ -101,6 +101,33 @@ export const installAgentLogFile = (dataDir: string = defaultDataDir()): void =>
   for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
     const original = console[method].bind(console) as (...args: unknown[]) => void;
     console[method] = tee(original) as unknown as (typeof console)[typeof method];
+  }
+};
+
+/** Last `maxLines` of a log text, preserving order. Pure, for tests. */
+export const tailLogLines = (text: string, maxLines: number): string[] => {
+  if (maxLines <= 0) {
+    return [];
+  }
+  const lines = text.split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  return lines.slice(-maxLines);
+};
+
+/**
+ * Reads the tail of the active log file for the log viewer. Never throws —
+ * a missing/unreadable log is an empty view, not a broken window.
+ */
+export const readLogTail = (maxLines: number): string[] => {
+  if (!logFilePath) {
+    return [];
+  }
+  try {
+    return tailLogLines(readFileSync(logFilePath, 'utf8'), maxLines);
+  } catch {
+    return [];
   }
 };
 
