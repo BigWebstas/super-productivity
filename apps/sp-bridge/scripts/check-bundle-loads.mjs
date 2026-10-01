@@ -44,6 +44,9 @@ const electronStub = {
   Tray: class {},
   clipboard: {},
   dialog: { showErrorBox: noop },
+  ipcMain: { handle: noop },
+  contextBridge: { exposeInMainWorld: noop },
+  ipcRenderer: { invoke: () => Promise.resolve(null) },
   nativeImage: {
     createFromPath: () => ({ isEmpty: () => true }),
     createEmpty: () => ({}),
@@ -67,6 +70,9 @@ Module._load = function (request, ...rest) {
 
 try {
   require_(bundle);
+  // The settings/status preload rides beside the main bundle (see
+  // electron-builder.yaml) and must evaluate cleanly too.
+  require_(resolve(appDir, 'dist/electron/preload.js'));
 } catch (error) {
   console.error(`✗ ${bundle} threw while being loaded:\n`);
   console.error(error instanceof Error ? (error.stack ?? error.message) : error);

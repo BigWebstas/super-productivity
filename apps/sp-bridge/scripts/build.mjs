@@ -129,6 +129,13 @@ const targets = [
     entryPoints: [resolve(appDir, 'src/electron/main.ts')],
     outfile: electronOutfile,
   },
+  // The settings/status windows' preload: bundled separately (not inlined
+  // into main) because Electron loads it by PATH beside the main bundle.
+  {
+    label: 'preload',
+    entryPoints: [resolve(appDir, 'src/electron/preload.ts')],
+    outfile: resolve(appDir, 'dist/electron/preload.js'),
+  },
 ];
 
 for (const { label, ...options } of targets) {

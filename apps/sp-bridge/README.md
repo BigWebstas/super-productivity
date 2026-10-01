@@ -97,7 +97,7 @@ runtime rather than as a build error — that is how the invented
 
 ```bash
 cd apps/sp-bridge
-npm run build          # dist/main.js + dist/electron/main.js
+npm run build          # dist/main.js + dist/electron/{main,preload}.js
 npm run build:min      # minified (+ sourcemap)
 npm run package        # bundle + electron-builder → release/*.exe
 npm run icon           # regenerate build/icon.{png,ico}
@@ -119,9 +119,10 @@ installed at all.
 
 `npm run package` runs electron-builder against `electron-builder.yaml`
 (NSIS, x64, per-user install, desktop + start-menu shortcuts). The config's
-`files` lists only `dist/electron/main.js` and `dist/electron/icon.png` — no
-source, and none of the agent's own dependency tree, because the agent is
-already bundled.
+`files` lists `dist/electron/main.js`, `dist/electron/preload.js` and
+`dist/electron/icon.png` — no source, and none of the agent's own dependency
+tree, because the agent is already bundled. The preload rides beside the main
+bundle because Electron loads it by path; the bundle check loads both.
 
 Those two paths are not cosmetic: electron-builder's sanity check asserts the
 `main` entry (`dist/electron/main.js`) is present in the archive, so a `files`
@@ -326,8 +327,11 @@ Ordered by dependency. Each step is independently testable. Steps 1–4 are done
    `ArchiveOperationHandler` into the file during sync apply.
 7. ~~**Electron shell + Windows packaging**~~ — done for the shell and the
    installer: `src/electron/main.ts` (tray, status window, single-instance lock)
-   and an electron-builder NSIS config built by CI. Still open: a settings UI for
-   the SuperSync URL / token / master password, and start-on-login.
+   and an electron-builder NSIS config built by CI. Settings live in the
+   desktop shell too: tray → Settings opens a window over a minimal preload
+   bridge (`window.spBridge`, redacted reads, blank-means-unchanged writes)
+   for the SuperSync URL / token / master password, sync cadence, and
+   start-on-login (`app.setLoginItemSettings`).
 
 ### Sync configuration
 

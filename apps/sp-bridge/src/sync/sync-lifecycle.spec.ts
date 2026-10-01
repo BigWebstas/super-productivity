@@ -59,4 +59,25 @@ describe('Sync lifecycle via /sync/config', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('shares one validation path between REST and programmatic updates', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-lifecycle-'));
+    let agent: StartedAgent | null = null;
+    try {
+      agent = await startAgent(dir, 0);
+      const updated = agent.updateSyncConfig({
+        accessToken: 'tok-0002',
+        syncIntervalMs: 0,
+      });
+      assert.equal(updated.accessTokenSet, true);
+      assert.ok(agent.sync !== null);
+      assert.throws(
+        () => agent?.updateSyncConfig({ accesToken: 'typo' }),
+        /Unknown config field/,
+      );
+    } finally {
+      await agent?.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

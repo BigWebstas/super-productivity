@@ -32,6 +32,7 @@ import {
   redactSyncConfig,
   saveSyncConfig,
   validateSyncConfigPatch,
+  type RedactedSyncConfig,
 } from './sync/sync-config';
 
 export interface StartedAgent {
@@ -42,6 +43,11 @@ export interface StartedAgent {
   server: LocalRestApiServer;
   /** Null when sync is not configured (no access token). */
   sync: SyncEngine | null;
+  /**
+   * Validates, persists and applies a sync config patch (same path as
+   * POST /sync/config). Used by the desktop settings window.
+   */
+  updateSyncConfig: (patch: unknown) => RedactedSyncConfig;
   stop: () => Promise<void>;
 }
 
@@ -142,6 +148,15 @@ export const startAgent = async (
   };
   recycleSyncEngine('startup');
 
+  // Shared by POST /sync/config and the desktop settings window: one
+  // validation + persist + recycle path, so the two can never disagree.
+  const applySyncConfigPatch = (patch: unknown): RedactedSyncConfig => {
+    const validated = validateSyncConfigPatch(patch);
+    const saved = saveSyncConfig(dataDir, validated);
+    recycleSyncEngine(isSyncConfigured(saved) ? 'config-enabled' : 'config-disabled');
+    return redactSyncConfig(saved);
+  };
+
   const server = new LocalRestApiServer({
     dataDir,
     port,
@@ -178,14 +193,7 @@ export const startAgent = async (
       },
       syncConfig: {
         get: () => redactSyncConfig(loadSyncConfig(dataDir)),
-        update: (patch: unknown) => {
-          const validated = validateSyncConfigPatch(patch);
-          const saved = saveSyncConfig(dataDir, validated);
-          recycleSyncEngine(
-            isSyncConfigured(saved) ? 'config-enabled' : 'config-disabled',
-          );
-          return redactSyncConfig(saved);
-        },
+        update: (patch: unknown) => applySyncConfigPatch(patch),
       },
     }),
   });
@@ -214,6 +222,7 @@ export const startAgent = async (
     get sync(): SyncEngine | null {
       return sync;
     },
+    updateSyncConfig: (patch: unknown) => applySyncConfigPatch(patch),
     stop: async () => {
       sync?.stop();
       focusTicker.stop();

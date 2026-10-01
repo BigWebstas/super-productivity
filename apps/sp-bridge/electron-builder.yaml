@@ -29,6 +29,8 @@ files:
   # and __dirname is dist/electron/ — so the icon has to sit beside the bundle,
   # not at dist/ root. See the copy in scripts/build.mjs.
   - dist/electron/icon.png
+  # Preload for the status/settings windows, loaded by path beside main.js.
+  - dist/electron/preload.js
 
 win:
   target:

@@ -46,15 +46,46 @@ import {
   Tray,
   clipboard,
   dialog,
+  ipcMain,
   nativeImage,
   shell,
 } from 'electron';
 import { join } from 'node:path';
 import { startAgent, type StartedAgent } from '../main';
+import { loadSyncConfig, redactSyncConfig } from '../sync/sync-config';
+import type { RendererSettings, SettingsSaveInput } from './preload';
 
 let tray: Tray | null = null;
 let statusWindow: BrowserWindow | null = null;
+let settingsWindow: BrowserWindow | null = null;
 let agent: StartedAgent | null = null;
+
+const preloadPath = (): string => join(__dirname, 'preload.js');
+
+const getOpenAtLogin = (): boolean => {
+  try {
+    return app.getLoginItemSettings().openAtLogin;
+  } catch {
+    return false;
+  }
+};
+
+const getRendererSettings = (): RendererSettings => {
+  if (!agent) {
+    throw new Error('Agent is not running');
+  }
+  const redacted = redactSyncConfig(loadSyncConfig(agent.dataDir));
+  return {
+    baseUrl: redacted.baseUrl ?? '',
+    accessTokenSet: redacted.accessTokenSet,
+    encryptKeySet: redacted.encryptKeySet,
+    isEncryptionEnabled: redacted.isEncryptionEnabled,
+    expiresAt: redacted.expiresAt,
+    syncIntervalMs: redacted.syncIntervalMs,
+    syncOnLocalChange: redacted.syncOnLocalChange,
+    openAtLogin: getOpenAtLogin(),
+  };
+};
 
 /**
  * Two copies of the agent would fight over the op log and the REST port: the
@@ -111,15 +142,128 @@ const STATUS_HTML = (
       its operation log, but does not yet exchange data with a sync server.
     </p>
     <button id="copy">Copy API URL and token</button>
+    <button id="settings">Settings</button>
     <script>
       const text = ${JSON.stringify(`${restUrl}\n${token}`)};
       document.getElementById('copy').addEventListener('click', () => {
         navigator.clipboard.writeText(text);
         document.getElementById('copy').textContent = 'Copied';
       });
+      document.getElementById('settings').addEventListener('click', () => {
+        if (window.spBridge) {
+          window.spBridge.openSettings();
+        }
+      });
     </script>
   </body>
 </html>`;
+
+const SETTINGS_HTML = (): string => `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>SP Bridge Settings</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 20px; max-width: 520px; }
+      h1 { font-size: 16px; margin: 0 0 12px; }
+      label { display: block; margin: 10px 0 2px; color: #444; }
+      input[type=text], input[type=password], input[type=number] { width: 100%; box-sizing: border-box; padding: 6px; }
+      .row { margin: 10px 0; }
+      .hint { color: #666; font-size: 12px; }
+      #error { color: #a00; margin-top: 10px; min-height: 1.2em; }
+      #saved { color: #060; margin-top: 10px; min-height: 1.2em; }
+    </style>
+  </head>
+  <body>
+    <h1>SP Bridge Settings</h1>
+    <label for="baseUrl">SuperSync server URL</label>
+    <input id="baseUrl" type="text" placeholder="default: https://sync.super-productivity.com" />
+    <label for="accessToken">Access token</label>
+    <input id="accessToken" type="password" placeholder="(unchanged when blank)" autocomplete="off" />
+    <label for="masterPassword">Master password (encryption)</label>
+    <input id="masterPassword" type="password" placeholder="(unchanged when blank)" autocomplete="off" />
+    <div class="hint">Set once: it is stored as the encryption key, never as a password.</div>
+    <label for="syncIntervalMs">Sync interval (ms, 0 = manual only)</label>
+    <input id="syncIntervalMs" type="number" min="0" step="1000" placeholder="60000" />
+    <div class="row"><label><input id="syncOnLocalChange" type="checkbox" /> Sync shortly after local changes</label></div>
+    <div class="row"><label><input id="openAtLogin" type="checkbox" /> Start SP Bridge when I log in</label></div>
+    <button id="save">Save</button>
+    <div id="error"></div>
+    <div id="saved"></div>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const fail = (message) => { $('error').textContent = message; $('saved').textContent = ''; };
+      const api = window.spBridge;
+      if (!api) {
+        fail('Settings bridge is unavailable in this window.');
+      } else {
+        api.getSettings().then(({ settings }) => {
+          $('baseUrl').value = settings.baseUrl || '';
+          $('syncIntervalMs').value =
+            settings.syncIntervalMs === undefined || settings.syncIntervalMs === null
+              ? ''
+              : String(settings.syncIntervalMs);
+          $('syncOnLocalChange').checked = settings.syncOnLocalChange !== false;
+          $('openAtLogin').checked = settings.openAtLogin === true;
+        }).catch((error) => fail(String((error && error.message) || error)));
+        $('save').addEventListener('click', () => {
+          fail('');
+          const intervalRaw = $('syncIntervalMs').value.trim();
+          const input = {
+            baseUrl: $('baseUrl').value.trim() || undefined,
+            accessToken: $('accessToken').value || undefined,
+            masterPassword: $('masterPassword').value || undefined,
+            syncIntervalMs: intervalRaw === '' ? undefined : Number(intervalRaw),
+            syncOnLocalChange: $('syncOnLocalChange').checked,
+            openAtLogin: $('openAtLogin').checked,
+          };
+          if (input.syncIntervalMs !== undefined && !Number.isFinite(input.syncIntervalMs)) {
+            fail('Sync interval must be a number.');
+            return;
+          }
+          api.saveSettings(input).then((result) => {
+            if (result.ok) {
+              $('saved').textContent = 'Saved. Sync engine recycled.';
+              $('accessToken').value = '';
+              $('masterPassword').value = '';
+            } else {
+              fail(result.error);
+            }
+          }).catch((error) => fail(String((error && error.message) || error)));
+        });
+      }
+    </script>
+  </body>
+</html>`;
+
+const showSettingsWindow = (): void => {
+  if (!agent) {
+    return;
+  }
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 560,
+    height: 640,
+    title: 'SP Bridge Settings',
+    webPreferences: {
+      // No Node in the renderer; the preload exposes exactly the settings API.
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      preload: preloadPath(),
+    },
+  });
+  settingsWindow.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(SETTINGS_HTML())}`,
+  );
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+  });
+};
 
 const showStatusWindow = (): void => {
   if (!agent) {
@@ -137,9 +281,11 @@ const showStatusWindow = (): void => {
     title: 'SP Bridge',
     webPreferences: {
       // The window only renders a local string; no remote content, no Node.
+      // The preload exposes exactly the settings opener for the button above.
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      preload: preloadPath(),
     },
   });
   statusWindow.loadURL(
@@ -162,6 +308,7 @@ const buildTray = (): void => {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Show status', click: showStatusWindow },
+      { label: 'Settings…', click: showSettingsWindow },
       {
         label: 'Copy API URL + token',
         click: () => {
@@ -195,6 +342,58 @@ const buildTray = (): void => {
 };
 
 app.on('second-instance', showStatusWindow);
+
+/**
+ * Settings IPC: the renderer's whole world is `window.spBridge` (see
+ * preload.ts). Secrets never cross it — reads are redacted, writes take
+ * blank-means-unchanged, and validation errors come back as data, not
+ * throws, so the form can show them inline.
+ */
+ipcMain.handle('sp-bridge:get-settings', () => {
+  try {
+    return { ok: true as const, settings: getRendererSettings() };
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
+  }
+});
+
+ipcMain.handle(
+  'sp-bridge:save-settings',
+  (
+    _event,
+    input: SettingsSaveInput,
+  ): { ok: true; settings: RendererSettings } | { ok: false; error: string } => {
+    if (!agent) {
+      return { ok: false, error: 'Agent is not running' };
+    }
+    try {
+      const patch: Record<string, unknown> = {};
+      if (input.baseUrl !== undefined) patch['baseUrl'] = input.baseUrl;
+      if (input.accessToken) patch['accessToken'] = input.accessToken;
+      if (input.masterPassword) patch['masterPassword'] = input.masterPassword;
+      if (input.syncIntervalMs !== undefined)
+        patch['syncIntervalMs'] = input.syncIntervalMs;
+      if (input.syncOnLocalChange !== undefined)
+        patch['syncOnLocalChange'] = input.syncOnLocalChange;
+      agent.updateSyncConfig(patch);
+      try {
+        app.setLoginItemSettings({ openAtLogin: input.openAtLogin === true });
+      } catch (error) {
+        console.warn('[bridge] Could not update login item settings', error);
+      }
+      return { ok: true, settings: getRendererSettings() };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
+);
+
+ipcMain.handle('sp-bridge:open-settings', () => {
+  showSettingsWindow();
+});
 
 // Anything that escapes the try/catch below used to be invisible: no window, no
 // tray, no dialog, no log. The console is teed to bridge.log (imported first
