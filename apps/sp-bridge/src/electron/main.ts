@@ -112,6 +112,7 @@ const STATUS_HTML = (
   restUrl: string,
   token: string,
   dataDir: string,
+  syncSummary: string,
 ): string => `<!doctype html>
 <html lang="en">
   <head>
@@ -126,6 +127,7 @@ const STATUS_HTML = (
       dt { color: #666; }
       dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-all; }
       .warn { margin-top: 18px; padding: 10px; background: #fff4e5; border-radius: 4px; }
+      .okmsg { margin-top: 18px; padding: 10px; background: #e8f5e9; border-radius: 4px; }
       button { margin-top: 6px; }
     </style>
   </head>
@@ -137,10 +139,7 @@ const STATUS_HTML = (
       <dt>Token</dt><dd>${escapeHtml(token)}</dd>
       <dt>Data</dt><dd>${escapeHtml(dataDir)}</dd>
     </dl>
-    <p class="warn">
-      SuperSync is not enabled in this build yet. The agent stores and replays
-      its operation log, but does not yet exchange data with a sync server.
-    </p>
+    ${syncSummary}
     <button id="copy">Copy API URL and token</button>
     <button id="settings">Settings</button>
     <script>
@@ -265,6 +264,29 @@ const showSettingsWindow = (): void => {
   });
 };
 
+/**
+ * Live sync summary for the status window. Reads the engine at open time, so
+ * the window never shows a stale build banner: unconfigured bridges get the
+ * setup pointer, healthy ones get last-sync/pending, and failed ones get the
+ * classified reason plus where to look.
+ */
+const syncSummaryHtml = (): string => {
+  const engine = agent?.sync;
+  if (!engine) {
+    return `<p class="warn">SuperSync is not configured. Open Settings to add
+      a server URL and access token.</p>`;
+  }
+  const status = engine.status();
+  const lastSync =
+    status.lastSyncAt === null ? 'never' : new Date(status.lastSyncAt).toLocaleString();
+  const state = status.lastErrorCode
+    ? `last error: ${escapeHtml(status.lastErrorCode)}`
+    : 'healthy';
+  const tone = status.lastErrorCode ? 'warn' : 'okmsg';
+  return `<p class="${tone}">SuperSync enabled. Last sync: ${escapeHtml(lastSync)};
+    pending upload: ${status.pendingUpload}; ${state}.</p>`;
+};
+
 const showStatusWindow = (): void => {
   if (!agent) {
     return;
@@ -290,7 +312,7 @@ const showStatusWindow = (): void => {
   });
   statusWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(
-      STATUS_HTML(restUrl, agent.server.token, agent.dataDir),
+      STATUS_HTML(restUrl, agent.server.token, agent.dataDir, syncSummaryHtml()),
     )}`,
   );
   statusWindow.on('closed', () => {
