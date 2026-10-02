@@ -198,8 +198,12 @@ const showStatusWindow = (): void => {
     return;
   }
   statusWindow = new BrowserWindow({
-    width: 560,
-    height: 420,
+    // Fits the API/token/data rows, the sync summary (account, entity
+    // counts), the button row and the update line without scrolling.
+    width: 640,
+    height: 600,
+    minWidth: 520,
+    minHeight: 480,
     title: 'SP Bridge',
     webPreferences: {
       nodeIntegration: false,
