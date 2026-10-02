@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>SP Bridge</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 20px; }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      p.sub { margin: 0 0 18px; color: #666; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+      dt { color: #666; }
+      dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-all; }
+      .warn { margin-top: 18px; padding: 10px; background: #fff4e5; border-radius: 4px; }
+      .okmsg { margin-top: 18px; padding: 10px; background: #e8f5e9; border-radius: 4px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+      .actions button { margin: 0; }
+      .feedback { margin-top: 10px; padding: 8px 10px; border-radius: 4px; display: none; }
+      .feedback.warn, .feedback.okmsg { display: block; }
+    </style>
+  </head>
+  <body>
+    <h1>SP Bridge</h1>
+    <p class="sub">Serving the Super Productivity local REST API.</p>
+    <dl>
+      <dt>API</dt><dd id="restUrl">loading...</dd>
+      <dt>Token</dt><dd id="token">loading...</dd>
+      <dt>Data</dt><dd id="dataDir">loading...</dd>
+    </dl>
+    <div id="syncSummaryContainer">
+      <p class="okmsg">Loading sync status...</p>
+    </div>
+    <div class="actions">
+      <button id="copy">Copy API URL and token</button>
+      <button id="settings">Settings</button>
+      <button id="log">View log</button>
+      <button id="sync">Sync now</button>
+      <button id="resync">Resync from server</button>
+    </div>
+    <div id="syncFeedback" class="feedback"></div>
+    <script>
+      let currentInfo = null;
+      const initInfo = async () => {
+        if (!window.spBridge || !window.spBridge.getInfo) return;
+        try {
+          currentInfo = await window.spBridge.getInfo();
+          document.getElementById('restUrl').textContent = currentInfo.restUrl;
+          document.getElementById('token').textContent = currentInfo.token;
+          document.getElementById('dataDir').textContent = currentInfo.dataDir;
+        } catch (e) {
+          console.error('Failed to get info', e);
+        }
+      };
+      initInfo();
+
+      document.getElementById('copy').addEventListener('click', async () => {
+        try {
+          if (!currentInfo && window.spBridge && window.spBridge.getInfo) {
+            currentInfo = await window.spBridge.getInfo();
+          }
+          const text = currentInfo ? `${currentInfo.restUrl}\n${currentInfo.token}` : '';
+          if (window.spBridge && window.spBridge.copyText) {
+            await window.spBridge.copyText(text);
+          } else {
+            await navigator.clipboard.writeText(text);
+          }
+          const copyBtn = document.getElementById('copy');
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => {
+            copyBtn.textContent = 'Copy API URL and token';
+          }, 2000);
+        } catch (err) {
+          console.error('Copy failed', err);
+        }
+      });
+
+      document.getElementById('settings').addEventListener('click', () => {
+        if (window.spBridge && window.spBridge.openSettings) {
+          window.spBridge.openSettings();
+        }
+      });
+      document.getElementById('log').addEventListener('click', () => {
+        if (window.spBridge && window.spBridge.openLog) {
+          window.spBridge.openLog();
+        }
+      });
+
+      const setFeedback = (msg, isError) => {
+        const el = document.getElementById('syncFeedback');
+        if (el) {
+          el.textContent = msg;
+          el.className = 'feedback ' + (isError ? 'warn' : 'okmsg');
+        }
+      };
+
+      const updateStatusUI = async () => {
+        if (!window.spBridge || !window.spBridge.getStatus) return;
+        try {
+          const s = await window.spBridge.getStatus();
+          const container = document.getElementById('syncSummaryContainer');
+          if (!container) return;
+          if (!s.syncEnabled) {
+            container.innerHTML =
+              '<p class="warn">SuperSync is not configured. Open Settings to add a server URL and access token.</p>';
+            return;
+          }
+          const lastSync = s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleString() : 'never';
+          const tone = s.lastErrorCode ? 'warn' : 'okmsg';
+          const stateStr = s.lastErrorCode ? 'last error: ' + s.lastErrorCode : 'healthy';
+          container.innerHTML =
+            '<p class="' + tone + '">SuperSync enabled. Last sync: ' + lastSync +
+            '; pending upload: ' + s.pendingUpload + '; ' + stateStr +
+            '.<br/><small style="opacity:0.85">Entities: ' + s.projectCount + ' projects, ' +
+            s.taskCount + ' tasks, ' + s.tagCount + ' tags</small></p>';
+        } catch (e) {
+          console.error('Failed to update status', e);
+        }
+      };
+      updateStatusUI();
+      setInterval(updateStatusUI, 3000);
+
+      document.getElementById('sync').addEventListener('click', async () => {
+        if (!window.spBridge || !window.spBridge.triggerSync) return;
+        setFeedback('Syncing...', false);
+        const res = await window.spBridge.triggerSync();
+        if (res.ok) {
+          const d = res.result;
+          setFeedback(
+            'Sync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
+            false,
+          );
+          await updateStatusUI();
+        } else {
+          setFeedback('Sync failed: ' + res.error, true);
+          await updateStatusUI();
+        }
+      });
+
+      document.getElementById('resync').addEventListener('click', async () => {
+        if (!window.spBridge || !window.spBridge.resync) return;
+        setFeedback('Resyncing from seq 0...', false);
+        const res = await window.spBridge.resync();
+        if (res.ok) {
+          const d = res.result;
+          setFeedback(
+            'Resync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
+            false,
+          );
+          await updateStatusUI();
+        } else {
+          setFeedback('Resync failed: ' + res.error, true);
+          await updateStatusUI();
+        }
+      });
+    </script>
+  </body>
+</html>

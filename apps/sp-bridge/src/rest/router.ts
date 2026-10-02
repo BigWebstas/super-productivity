@@ -217,7 +217,14 @@ const getProjectById = (state: AgentState, id: string): EntityCandidate | undefi
     (state as unknown as Record<string, unknown>)['project'],
     'project',
   );
-  return fallback.find((p) => p.id === id);
+  const foundFallback = fallback.find((p) => p.id === id);
+  if (foundFallback) return foundFallback;
+  const tasks = Object.values(taskEntities(state) || {});
+  const matchingTask = tasks.find((t) => t.projectId === id);
+  if (matchingTask) {
+    return { id, title: id };
+  }
+  return undefined;
 };
 
 /** Mirrors the app's `createNewTaskWithDefaults` for the agent's single context. */
@@ -969,6 +976,17 @@ export const createRouteHandler = ({
           byId.set(p.id, p);
         }
       }
+      const tasks = Object.values(taskEntities(store.state) || {});
+      for (const t of tasks) {
+        if (
+          t.projectId &&
+          t.projectId !== INBOX_PROJECT.id &&
+          t.projectId !== 'INBOX' &&
+          !byId.has(t.projectId)
+        ) {
+          byId.set(t.projectId, { id: t.projectId, title: t.projectId });
+        }
+      }
       let projects = Array.from(byId.values()).filter((p) => !p.isArchived);
       if (needle) {
         projects = projects.filter((p) =>
@@ -991,6 +1009,16 @@ export const createRouteHandler = ({
       )) {
         if (!byId.has(t.id)) {
           byId.set(t.id, t);
+        }
+      }
+      const tasks = Object.values(taskEntities(store.state) || {});
+      for (const t of tasks) {
+        if (Array.isArray(t.tagIds)) {
+          for (const tid of t.tagIds) {
+            if (tid && tid !== TODAY_TAG.id && tid !== 'TODAY' && !byId.has(tid)) {
+              byId.set(tid, { id: tid, title: tid });
+            }
+          }
         }
       }
       let tags = Array.from(byId.values());

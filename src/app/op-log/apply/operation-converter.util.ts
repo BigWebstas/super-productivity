@@ -50,9 +50,14 @@ const getDeterministicLegacyDay = (timestamp: number): string =>
  * IMPORTANT: Never remove entries from this map - old operations may still
  * reference the old action type.
  */
+/* eslint-disable @typescript-eslint/naming-convention */
 export const ACTION_TYPE_ALIASES: Record<string, string> = {
-  // Example: '[Task] Update Task': '[Task] Update',
+  '[Project] LWW Update': '[PROJECT] LWW Update',
+  '[Tag] LWW Update': '[TAG] LWW Update',
+  '[Task] LWW Update': '[TASK] LWW Update',
+  '[Note] LWW Update': '[NOTE] LWW Update',
 };
+/* eslint-enable @typescript-eslint/naming-convention */
 
 /**
  * Extracts the action payload for full-state operations (SYNC_IMPORT, BACKUP_IMPORT, Repair).
@@ -66,6 +71,9 @@ export const ACTION_TYPE_ALIASES: Record<string, string> = {
 const extractFullStatePayload = (payload: unknown): Record<string, unknown> => {
   let raw: unknown = payload;
   if (isMultiEntityPayload(raw)) {
+    raw = raw.actionPayload;
+  }
+  while (isRecord(raw) && 'actionPayload' in raw) {
     raw = raw.actionPayload;
   }
   if (isRecord(raw) && 'appDataComplete' in raw) {
@@ -299,6 +307,14 @@ export const convertOpToAction = (
   let actionPayload: Record<string, unknown> = isFullStateOp
     ? extractFullStatePayload(op.payload)
     : (extractActionPayload(op.payload) as Record<string, unknown>);
+
+  while (
+    isRecord(actionPayload) &&
+    'actionPayload' in actionPayload &&
+    isRecord(actionPayload['actionPayload'])
+  ) {
+    actionPayload = actionPayload['actionPayload'] as Record<string, unknown>;
+  }
 
   // JSON primitives and arrays are object-spreadable at runtime: a non-record
   // singleton payload such as "x" or ["x"] would spread into { 0: "x" }, which

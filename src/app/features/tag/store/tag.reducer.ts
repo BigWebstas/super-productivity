@@ -413,6 +413,7 @@ export const tagReducer = createReducer<TagState>(
   on(addTag, (state: TagState, action) => {
     const raw =
       action.tag ??
+      (action as { actionPayload?: { tag?: Tag } }).actionPayload?.tag ??
       ('id' in action && typeof (action as { id?: unknown }).id === 'string'
         ? (action as unknown as Tag)
         : undefined);
@@ -431,7 +432,9 @@ export const tagReducer = createReducer<TagState>(
   }),
 
   on(updateTag, (state: TagState, action) => {
-    let tag = action.tag;
+    let tag =
+      action.tag ??
+      (action as { actionPayload?: { tag?: Update<Tag> } }).actionPayload?.tag;
     if (
       tag &&
       typeof tag === 'object' &&

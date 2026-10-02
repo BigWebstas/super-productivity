@@ -31,6 +31,8 @@ files:
   - dist/electron/icon.png
   # Preload for the status/settings windows, loaded by path beside main.js.
   - dist/electron/preload.js
+  # HTML files for status, settings, and log windows.
+  - dist/electron/*.html
 
 win:
   target:

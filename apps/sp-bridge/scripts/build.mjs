@@ -158,3 +158,10 @@ copyFileSync(
   resolve(appDir, 'build/icon.png'),
   resolve(appDir, 'dist/electron/icon.png'),
 );
+
+for (const file of ['status.html', 'settings.html', 'log.html']) {
+  copyFileSync(
+    resolve(appDir, `src/electron/${file}`),
+    resolve(appDir, `dist/electron/${file}`),
+  );
+}

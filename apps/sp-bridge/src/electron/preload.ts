@@ -45,7 +45,14 @@ export interface RendererStatus {
   tagCount: number;
 }
 
+export interface RendererAppInfo {
+  restUrl: string;
+  token: string;
+  dataDir: string;
+}
+
 export interface RendererBridgeApi {
+  getInfo: () => Promise<RendererAppInfo>;
   getSettings: () => Promise<{ ok: true; settings: RendererSettings }>;
   saveSettings: (
     input: SettingsSaveInput,
@@ -64,6 +71,7 @@ export interface RendererBridgeApi {
 }
 
 const api: RendererBridgeApi = {
+  getInfo: () => ipcRenderer.invoke('sp-bridge:get-info'),
   getSettings: () => ipcRenderer.invoke('sp-bridge:get-settings'),
   saveSettings: (input: SettingsSaveInput) =>
     ipcRenderer.invoke('sp-bridge:save-settings', input),

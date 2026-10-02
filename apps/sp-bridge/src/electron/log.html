@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>SP Bridge Log</title>
+    <style>
+      html, body { height: 100%; margin: 0; padding: 0; }
+      body {
+        font: 12px/1.5 ui-monospace, monospace;
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+        color: #111;
+      }
+      #bar {
+        padding: 8px 12px;
+        border-bottom: 1px solid #ddd;
+        font-family: system-ui, sans-serif;
+        font-size: 13px;
+        background: #f8f8f8;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #bar label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+      #note { color: #666; font-size: 12px; margin-left: auto; }
+      #log { flex: 1; overflow-y: auto; margin: 0; padding: 8px 12px; white-space: pre-wrap; word-break: break-all; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #1e1e1e; color: #d4d4d4; }
+        #bar { border-bottom-color: #333; background: #252526; color: #eee; }
+        #note { color: #aaa; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <label><input id="pause" type="checkbox" /> Pause</label>
+      <button id="refreshBtn">Refresh</button>
+      <span id="note"></span>
+    </div>
+    <pre id="log"></pre>
+    <script>
+      const el = document.getElementById('log');
+      const note = document.getElementById('note');
+      const pauseBox = document.getElementById('pause');
+      const api = window.spBridge;
+      let currentText = null;
+      const render = (lines) => {
+        const next = lines.length ? lines.join('\n') : '(log is empty)';
+        const countMsg = lines.length + ' line' + (lines.length === 1 ? '' : 's');
+        note.textContent = pauseBox.checked ? 'Paused (' + countMsg + ')' : countMsg;
+        if (next === currentText) {
+          return;
+        }
+        const pinned = currentText === null || (el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+        currentText = next;
+        el.textContent = next;
+        if (pinned) {
+          el.scrollTop = el.scrollHeight;
+        }
+      };
+      const refresh = () => {
+        if (!api) {
+          return;
+        }
+        api.readLog().then(render).catch((error) => {
+          note.textContent = String((error && error.message) || error);
+        });
+      };
+      pauseBox.addEventListener('change', () => {
+        if (!pauseBox.checked) {
+          refresh();
+        } else if (currentText !== null) {
+          note.textContent = 'Paused (' + note.textContent.replace(/^Paused \(/, '').replace(/\)$/, '') + ')';
+        }
+      });
+      document.getElementById('refreshBtn').addEventListener('click', refresh);
+      if (!api) {
+        note.textContent = 'Log bridge is unavailable in this window.';
+      } else {
+        refresh();
+        setInterval(() => {
+          if (!pauseBox.checked) {
+            refresh();
+          }
+        }, 2000);
+      }
+    </script>
+  </body>
+</html>

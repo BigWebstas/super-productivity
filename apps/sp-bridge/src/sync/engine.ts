@@ -467,10 +467,18 @@ export class SyncEngine {
       }
       decrypted = decryptedOps;
       console.log(
-        `[sync] Decrypted ${decrypted.length} ops for resync replay. First 5:`,
-        decrypted
-          .slice(0, 5)
-          .map((o) => ({ id: o.id, opType: o.opType, actionType: o.actionType })),
+        `[sync] Decrypted ${decrypted.length} ops for resync replay:`,
+        decrypted.map((o) => ({
+          id: o.id,
+          opType: o.opType,
+          entityType: o.entityType,
+          actionType: o.actionType,
+          entityId: o.entityId,
+          payloadKeys:
+            typeof o.payload === 'object' && o.payload !== null
+              ? Object.keys(o.payload)
+              : [],
+        })),
       );
     }
     this._assertEpoch(epoch);
@@ -545,10 +553,20 @@ export class SyncEngine {
     const taskCount =
       Object.keys(state?.tasks?.entities || state?.task?.entities || {}).length ||
       (state?.tasks?.ids?.length ?? state?.task?.ids?.length ?? 0);
+    const projTitles = Object.values(
+      state?.projects?.entities || state?.project?.entities || {},
+    )
+      .map((p) => (p as { title?: string })?.title)
+      .filter(Boolean);
+    const tagTitles = Object.values(
+      state?.tag?.entities || state?.tags?.entities || {},
+    )
+      .map((t) => (t as { title?: string })?.title)
+      .filter(Boolean);
     console.log(
       `[sync] Resync replay complete. Store entity counts: ` +
-        `projects=${projCount}, ` +
-        `tags=${tagCount}, ` +
+        `projects=${projCount} (${projTitles.join(', ')}), ` +
+        `tags=${tagCount} (${tagTitles.join(', ')}), ` +
         `tasks=${taskCount}`,
     );
 
@@ -1137,7 +1155,7 @@ export class SyncEngine {
   status(): SyncEngineStatus {
     const now = Date.now();
     return {
-      enabled: false,
+      enabled: true,
       running: this._running,
       lastSyncAt: this.lastSyncAt,
       lastResult: this.lastResult,

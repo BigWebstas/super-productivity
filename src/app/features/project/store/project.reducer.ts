@@ -209,6 +209,7 @@ export const projectReducer = createReducer<ProjectState>(
   on(addProject, (state, action) => {
     const raw =
       action.project ??
+      (action as { actionPayload?: { project?: Project } }).actionPayload?.project ??
       ('id' in action && typeof (action as { id?: unknown }).id === 'string'
         ? (action as unknown as Project)
         : undefined);
@@ -228,7 +229,10 @@ export const projectReducer = createReducer<ProjectState>(
   on(addProjects, (state, { projects }) => projectAdapter.addMany(projects, state)),
 
   on(updateProject, (state, action) => {
-    let project = action.project;
+    let project =
+      action.project ??
+      (action as { actionPayload?: { project?: Update<Project> } }).actionPayload
+        ?.project;
     if (
       project &&
       typeof project === 'object' &&

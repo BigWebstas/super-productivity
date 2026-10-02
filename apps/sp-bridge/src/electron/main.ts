@@ -50,10 +50,12 @@ import {
   nativeImage,
   shell,
 } from 'electron';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { startAgent, type StartedAgent } from '../main';
 import { loadSyncConfig, redactSyncConfig } from '../sync/sync-config';
 import type {
+  RendererAppInfo,
   RendererSettings,
   RendererStatus,
   RendererSyncResult,
@@ -107,233 +109,13 @@ if (!gotSingleInstanceLock) {
   process.exit(0);
 }
 
-const escapeHtml = (value: string): string =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-
-const STATUS_HTML = (
-  restUrl: string,
-  token: string,
-  dataDir: string,
-  syncSummary: string,
-): string => `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
-    <title>SP Bridge</title>
-    <style>
-      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 20px; }
-      h1 { font-size: 16px; margin: 0 0 4px; }
-      p.sub { margin: 0 0 18px; color: #666; }
-      dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
-      dt { color: #666; }
-      dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-all; }
-      .warn { margin-top: 18px; padding: 10px; background: #fff4e5; border-radius: 4px; }
-      .okmsg { margin-top: 18px; padding: 10px; background: #e8f5e9; border-radius: 4px; }
-      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-      .actions button { margin: 0; }
-      .feedback { margin-top: 10px; padding: 8px 10px; border-radius: 4px; display: none; }
-      .feedback.warn, .feedback.okmsg { display: block; }
-    </style>
-  </head>
-  <body>
-    <h1>SP Bridge</h1>
-    <p class="sub">Serving the Super Productivity local REST API.</p>
-    <dl>
-      <dt>API</dt><dd>${escapeHtml(restUrl)}</dd>
-      <dt>Token</dt><dd>${escapeHtml(token)}</dd>
-      <dt>Data</dt><dd>${escapeHtml(dataDir)}</dd>
-    </dl>
-    <div id="syncSummaryContainer">
-      ${syncSummary}
-    </div>
-    <div class="actions">
-      <button id="copy">Copy API URL and token</button>
-      <button id="settings">Settings</button>
-      <button id="log">View log</button>
-      <button id="sync">Sync now</button>
-      <button id="resync">Resync from server</button>
-    </div>
-    <div id="syncFeedback" class="feedback"></div>
-    <script>
-      const text = ${JSON.stringify(`${restUrl}\n${token}`)};
-      document.getElementById('copy').addEventListener('click', async () => {
-        try {
-          if (window.spBridge && window.spBridge.copyText) {
-            await window.spBridge.copyText(text);
-          } else {
-            await navigator.clipboard.writeText(text);
-          }
-          const copyBtn = document.getElementById('copy');
-          copyBtn.textContent = 'Copied';
-          setTimeout(() => {
-            copyBtn.textContent = 'Copy API URL and token';
-          }, 2000);
-        } catch (err) {
-          console.error('Copy failed', err);
-        }
-      });
-      document.getElementById('settings').addEventListener('click', () => {
-        if (window.spBridge) {
-          window.spBridge.openSettings();
-        }
-      });
-      document.getElementById('log').addEventListener('click', () => {
-        if (window.spBridge) {
-          window.spBridge.openLog();
-        }
-      });
-      const setFeedback = (msg, isError) => {
-        const el = document.getElementById('syncFeedback');
-        if (el) {
-          el.textContent = msg;
-          el.className = 'feedback ' + (isError ? 'warn' : 'okmsg');
-        }
-      };
-      const updateStatusUI = async () => {
-        if (!window.spBridge || !window.spBridge.getStatus) return;
-        try {
-          const s = await window.spBridge.getStatus();
-          const container = document.getElementById('syncSummaryContainer');
-          if (!container) return;
-          if (!s.syncEnabled) {
-            container.innerHTML =
-              '<p class="warn">SuperSync is not configured. Open Settings to add a server URL and access token.</p>';
-            return;
-          }
-          const lastSync = s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleString() : 'never';
-          const tone = s.lastErrorCode ? 'warn' : 'okmsg';
-          const stateStr = s.lastErrorCode ? 'last error: ' + s.lastErrorCode : 'healthy';
-          container.innerHTML =
-            '<p class="' + tone + '">SuperSync enabled. Last sync: ' + lastSync +
-            '; pending upload: ' + s.pendingUpload + '; ' + stateStr +
-            '.<br/><small style="opacity:0.85">Entities: ' + s.projectCount + ' projects, ' +
-            s.taskCount + ' tasks, ' + s.tagCount + ' tags</small></p>';
-        } catch (e) {
-          console.error('Failed to update status', e);
-        }
-      };
-      updateStatusUI();
-      setInterval(updateStatusUI, 3000);
-
-      document.getElementById('sync').addEventListener('click', async () => {
-        if (!window.spBridge) return;
-        setFeedback('Syncing...', false);
-        const res = await window.spBridge.triggerSync();
-        if (res.ok) {
-          const d = res.result;
-          setFeedback(
-            'Sync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
-            false,
-          );
-          await updateStatusUI();
-        } else {
-          setFeedback('Sync failed: ' + res.error, true);
-          await updateStatusUI();
-        }
-      });
-      document.getElementById('resync').addEventListener('click', async () => {
-        if (!window.spBridge) return;
-        setFeedback('Resyncing from seq 0...', false);
-        const res = await window.spBridge.resync();
-        if (res.ok) {
-          const d = res.result;
-          setFeedback(
-            'Resync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
-            false,
-          );
-          await updateStatusUI();
-        } else {
-          setFeedback('Resync failed: ' + res.error, true);
-          await updateStatusUI();
-        }
-      });
-    </script>
-  </body>
-</html>`;
-
-const SETTINGS_HTML = (): string => `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
-    <title>SP Bridge Settings</title>
-    <style>
-      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 20px; max-width: 520px; }
-      h1 { font-size: 16px; margin: 0 0 12px; }
-      label { display: block; margin: 10px 0 2px; color: #444; }
-      input[type=text], input[type=password], input[type=number] { width: 100%; box-sizing: border-box; padding: 6px; }
-      .row { margin: 10px 0; }
-      .hint { color: #666; font-size: 12px; }
-      #error { color: #a00; margin-top: 10px; min-height: 1.2em; }
-      #saved { color: #060; margin-top: 10px; min-height: 1.2em; }
-    </style>
-  </head>
-  <body>
-    <h1>SP Bridge Settings</h1>
-    <label for="baseUrl">SuperSync server URL</label>
-    <input id="baseUrl" type="text" placeholder="default: https://sync.super-productivity.com" />
-    <label for="accessToken">Access token</label>
-    <input id="accessToken" type="password" placeholder="(unchanged when blank)" autocomplete="off" />
-    <label for="masterPassword">Master password (encryption)</label>
-    <input id="masterPassword" type="password" placeholder="(unchanged when blank)" autocomplete="off" />
-    <div class="hint">Set once: it is stored as the encryption key, never as a password.</div>
-    <label for="syncIntervalMs">Sync interval (ms, 0 = manual only)</label>
-    <input id="syncIntervalMs" type="number" min="0" step="1000" placeholder="60000" />
-    <div class="row"><label><input id="syncOnLocalChange" type="checkbox" /> Sync shortly after local changes</label></div>
-    <div class="row"><label><input id="openAtLogin" type="checkbox" /> Start SP Bridge when I log in</label></div>
-    <button id="save">Save</button>
-    <div id="error"></div>
-    <div id="saved"></div>
-    <script>
-      const $ = (id) => document.getElementById(id);
-      const fail = (message) => { $('error').textContent = message; $('saved').textContent = ''; };
-      const api = window.spBridge;
-      if (!api) {
-        fail('Settings bridge is unavailable in this window.');
-      } else {
-        api.getSettings().then(({ settings }) => {
-          $('baseUrl').value = settings.baseUrl || '';
-          $('syncIntervalMs').value =
-            settings.syncIntervalMs === undefined || settings.syncIntervalMs === null
-              ? ''
-              : String(settings.syncIntervalMs);
-          $('syncOnLocalChange').checked = settings.syncOnLocalChange !== false;
-          $('openAtLogin').checked = settings.openAtLogin === true;
-        }).catch((error) => fail(String((error && error.message) || error)));
-        $('save').addEventListener('click', () => {
-          fail('');
-          const intervalRaw = $('syncIntervalMs').value.trim();
-          const input = {
-            baseUrl: $('baseUrl').value.trim() || undefined,
-            accessToken: $('accessToken').value || undefined,
-            masterPassword: $('masterPassword').value || undefined,
-            syncIntervalMs: intervalRaw === '' ? undefined : Number(intervalRaw),
-            syncOnLocalChange: $('syncOnLocalChange').checked,
-            openAtLogin: $('openAtLogin').checked,
-          };
-          if (input.syncIntervalMs !== undefined && !Number.isFinite(input.syncIntervalMs)) {
-            fail('Sync interval must be a number.');
-            return;
-          }
-          api.saveSettings(input).then((result) => {
-            if (result.ok) {
-              $('saved').textContent = 'Saved. Sync engine recycled.';
-              $('accessToken').value = '';
-              $('masterPassword').value = '';
-            } else {
-              fail(result.error);
-            }
-          }).catch((error) => fail(String((error && error.message) || error)));
-        });
-      }
-    </script>
-  </body>
-</html>`;
+const getHtmlPath = (filename: string): string => {
+  const inDir = join(__dirname, filename);
+  if (existsSync(inDir)) return inDir;
+  const inSrc = join(__dirname, '../../src/electron', filename);
+  if (existsSync(inSrc)) return inSrc;
+  return inDir;
+};
 
 const showSettingsWindow = (): void => {
   if (!agent) {
@@ -348,112 +130,17 @@ const showSettingsWindow = (): void => {
     height: 640,
     title: 'SP Bridge Settings',
     webPreferences: {
-      // No Node in the renderer; the preload exposes exactly the settings API.
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
       preload: preloadPath(),
     },
   });
-  settingsWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(SETTINGS_HTML())}`,
-  );
+  settingsWindow.loadFile(getHtmlPath('settings.html'));
   settingsWindow.on('closed', () => {
     settingsWindow = null;
   });
 };
-
-const LOG_HTML = (): string => `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
-    <title>SP Bridge Log</title>
-    <style>
-      html, body { height: 100%; margin: 0; padding: 0; }
-      body {
-        font: 12px/1.5 ui-monospace, monospace;
-        display: flex;
-        flex-direction: column;
-        background: #fff;
-        color: #111;
-      }
-      #bar {
-        padding: 8px 12px;
-        border-bottom: 1px solid #ddd;
-        font-family: system-ui, sans-serif;
-        font-size: 13px;
-        background: #f8f8f8;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-      #bar label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
-      #note { color: #666; font-size: 12px; margin-left: auto; }
-      #log { flex: 1; overflow-y: auto; margin: 0; padding: 8px 12px; white-space: pre-wrap; word-break: break-all; }
-      @media (prefers-color-scheme: dark) {
-        body { background: #1e1e1e; color: #d4d4d4; }
-        #bar { border-bottom-color: #333; background: #252526; color: #eee; }
-        #note { color: #aaa; }
-      }
-    </style>
-  </head>
-  <body>
-    <div id="bar">
-      <label><input id="pause" type="checkbox" /> Pause</label>
-      <button id="refreshBtn">Refresh</button>
-      <span id="note"></span>
-    </div>
-    <pre id="log"></pre>
-    <script>
-      const el = document.getElementById('log');
-      const note = document.getElementById('note');
-      const pauseBox = document.getElementById('pause');
-      const api = window.spBridge;
-      let currentText = null;
-      const render = (lines) => {
-        const next = lines.length ? lines.join('\\n') : '(log is empty)';
-        const countMsg = lines.length + ' line' + (lines.length === 1 ? '' : 's');
-        note.textContent = pauseBox.checked ? 'Paused (' + countMsg + ')' : countMsg;
-        if (next === currentText) {
-          return;
-        }
-        const pinned = currentText === null || (el.scrollHeight - el.scrollTop - el.clientHeight < 40);
-        currentText = next;
-        el.textContent = next;
-        if (pinned) {
-          el.scrollTop = el.scrollHeight;
-        }
-      };
-      const refresh = () => {
-        if (!api) {
-          return;
-        }
-        api.readLog().then(render).catch((error) => {
-          note.textContent = String((error && error.message) || error);
-        });
-      };
-      pauseBox.addEventListener('change', () => {
-        if (!pauseBox.checked) {
-          refresh();
-        } else if (currentText !== null) {
-          note.textContent = 'Paused (' + note.textContent.replace(/^Paused \\(/, '').replace(/\\)$/, '') + ')';
-        }
-      });
-      document.getElementById('refreshBtn').addEventListener('click', refresh);
-      if (!api) {
-        note.textContent = 'Log bridge is unavailable in this window.';
-      } else {
-        refresh();
-        setInterval(() => {
-          if (!pauseBox.checked) {
-            refresh();
-          }
-        }, 2000);
-      }
-    </script>
-  </body>
-</html>`;
 
 const showLogWindow = (): void => {
   if (logWindow && !logWindow.isDestroyed()) {
@@ -465,40 +152,16 @@ const showLogWindow = (): void => {
     height: 480,
     title: 'SP Bridge Log',
     webPreferences: {
-      // No Node in the renderer; the preload exposes exactly the log reader.
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
       preload: preloadPath(),
     },
   });
-  logWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOG_HTML())}`);
+  logWindow.loadFile(getHtmlPath('log.html'));
   logWindow.on('closed', () => {
     logWindow = null;
   });
-};
-
-/**
- * Live sync summary for the status window. Reads the engine at open time, so
- * the window never shows a stale build banner: unconfigured bridges get the
- * setup pointer, healthy ones get last-sync/pending, and failed ones get the
- * classified reason plus where to look.
- */
-const syncSummaryHtml = (): string => {
-  const engine = agent?.sync;
-  if (!engine) {
-    return `<p class="warn">SuperSync is not configured. Open Settings to add
-      a server URL and access token.</p>`;
-  }
-  const status = engine.status();
-  const lastSync =
-    status.lastSyncAt === null ? 'never' : new Date(status.lastSyncAt).toLocaleString();
-  const state = status.lastErrorCode
-    ? `last error: ${escapeHtml(status.lastErrorCode)}`
-    : 'healthy';
-  const tone = status.lastErrorCode ? 'warn' : 'okmsg';
-  return `<p class="${tone}">SuperSync enabled. Last sync: ${escapeHtml(lastSync)};
-    pending upload: ${status.pendingUpload}; ${state}.</p>`;
 };
 
 const showStatusWindow = (): void => {
@@ -509,26 +172,18 @@ const showStatusWindow = (): void => {
     statusWindow.focus();
     return;
   }
-  const address = agent.server.address();
-  const restUrl = `http://${address?.host}:${address?.port}`;
   statusWindow = new BrowserWindow({
     width: 560,
     height: 420,
     title: 'SP Bridge',
     webPreferences: {
-      // The window only renders a local string; no remote content, no Node.
-      // The preload exposes exactly the settings opener for the button above.
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
       preload: preloadPath(),
     },
   });
-  statusWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(
-      STATUS_HTML(restUrl, agent.server.token, agent.dataDir, syncSummaryHtml()),
-    )}`,
-  );
+  statusWindow.loadFile(getHtmlPath('status.html'));
   statusWindow.on('closed', () => {
     statusWindow = null;
   });
@@ -770,6 +425,15 @@ ipcMain.handle(
     }
   },
 );
+
+ipcMain.handle('sp-bridge:get-info', (): RendererAppInfo => {
+  const address = agent?.server.address();
+  return {
+    restUrl: address ? `http://${address.host}:${address.port}` : '',
+    token: agent?.server.token ?? '',
+    dataDir: agent?.dataDir ?? '',
+  };
+});
 
 ipcMain.handle('sp-bridge:copy-text', (_event, text: string) => {
   clipboard.writeText(text);
