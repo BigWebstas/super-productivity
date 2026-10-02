@@ -15,5 +15,6 @@ import '../sync/sync-config.spec';
 import '../sync/sync-lifecycle.spec';
 import '../focus/focus-ticker.spec';
 import '../platform/agent-log-file.spec';
+import '../update/update-check.spec';
 
 void runAll();

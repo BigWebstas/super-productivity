@@ -163,6 +163,11 @@ export const startAgent = async (
     const validated = validateSyncConfigPatch(patch);
     const saved = saveSyncConfig(dataDir, validated);
     recycleSyncEngine(isSyncConfigured(saved) ? 'config-enabled' : 'config-disabled');
+    if (validated.accessToken !== undefined) {
+      console.log(
+        `[bridge] sync account now ${redactSyncConfig(saved).account ?? 'unknown'}`,
+      );
+    }
     return redactSyncConfig(saved);
   };
 
@@ -230,7 +235,8 @@ export const startAgent = async (
       `[bridge] listening  http://${address?.host}:${address?.port}\n` +
       `[bridge] token      ${server.token}\n` +
       (sync
-        ? `[bridge] sync       SuperSync enabled (base: ${loadSyncConfig(dataDir).baseUrl ?? 'default'})`
+        ? `[bridge] sync       SuperSync enabled (base: ${loadSyncConfig(dataDir).baseUrl ?? 'default'}` +
+          `, account: ${redactSyncConfig(loadSyncConfig(dataDir)).account ?? 'unknown'})`
         : `[bridge] sync       not configured — add accessToken to sync.json to enable`),
   );
 

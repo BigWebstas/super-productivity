@@ -41,6 +41,10 @@
       <button id="resync">Resync from server</button>
     </div>
     <div id="syncFeedback" class="feedback"></div>
+    <p id="updateLine" hidden>
+      <span id="updateText"></span>
+      <button id="installUpdate" hidden>Restart to install</button>
+    </p>
     <script>
       let currentInfo = null;
       const initInfo = async () => {
@@ -96,6 +100,9 @@
         }
       };
 
+      const escapeHtml = (text) =>
+        String(text).replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';');
+
       const updateStatusUI = async () => {
         if (!window.spBridge || !window.spBridge.getStatus) return;
         try {
@@ -113,14 +120,30 @@
           container.innerHTML =
             '<p class="' + tone + '">SuperSync enabled. Last sync: ' + lastSync +
             '; pending upload: ' + s.pendingUpload + '; ' + stateStr +
+            '.<br/>Account: ' + escapeHtml(s.account || 'unknown') +
             '.<br/><small style="opacity:0.85">Entities: ' + s.projectCount + ' projects, ' +
             s.taskCount + ' tasks, ' + s.tagCount + ' tags</small></p>';
         } catch (e) {
           console.error('Failed to update status', e);
         }
       };
+      const updateUpdateUI = async () => {
+        if (!window.spBridge || !window.spBridge.getUpdateStatus) return;
+        const text = await window.spBridge.getUpdateStatus();
+        document.getElementById('updateLine').hidden = !text;
+        document.getElementById('updateText').textContent = text || '';
+        document.getElementById('installUpdate').hidden = !(text && text.includes('ready'));
+      };
+      document.getElementById('installUpdate').addEventListener('click', () => {
+        window.spBridge.installUpdate();
+      });
+
       updateStatusUI();
-      setInterval(updateStatusUI, 3000);
+      updateUpdateUI();
+      setInterval(() => {
+        updateStatusUI();
+        updateUpdateUI();
+      }, 3000);
 
       document.getElementById('sync').addEventListener('click', async () => {
         if (!window.spBridge || !window.spBridge.triggerSync) return;

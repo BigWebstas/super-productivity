@@ -39,55 +39,50 @@
   <body>
     <div id="bar">
       <label><input id="pause" type="checkbox" /> Pause</label>
-      <button id="refreshBtn">Refresh</button>
       <span id="note"></span>
     </div>
     <pre id="log"></pre>
     <script>
+      // Live: the main process pushes each line as it is written. "Pause"
+      // freezes the view; un-pausing re-reads the file so nothing is missed.
+      const MAX_LINES = 1000;
       const el = document.getElementById('log');
       const note = document.getElementById('note');
       const pauseBox = document.getElementById('pause');
       const api = window.spBridge;
-      let currentText = null;
-      const render = (lines) => {
-        const next = lines.length ? lines.join('\n') : '(log is empty)';
+      let lines = [];
+      const render = () => {
         const countMsg = lines.length + ' line' + (lines.length === 1 ? '' : 's');
-        note.textContent = pauseBox.checked ? 'Paused (' + countMsg + ')' : countMsg;
-        if (next === currentText) {
-          return;
-        }
-        const pinned = currentText === null || (el.scrollHeight - el.scrollTop - el.clientHeight < 40);
-        currentText = next;
-        el.textContent = next;
+        note.textContent = pauseBox.checked ? 'Paused (' + countMsg + ')' : 'Live (' + countMsg + ')';
+        const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        el.textContent = lines.length ? lines.join('\n') : '(log is empty)';
         if (pinned) {
           el.scrollTop = el.scrollHeight;
         }
       };
-      const refresh = () => {
-        if (!api) {
-          return;
-        }
-        api.readLog().then(render).catch((error) => {
-          note.textContent = String((error && error.message) || error);
-        });
-      };
-      pauseBox.addEventListener('change', () => {
-        if (!pauseBox.checked) {
-          refresh();
-        } else if (currentText !== null) {
-          note.textContent = 'Paused (' + note.textContent.replace(/^Paused \(/, '').replace(/\)$/, '') + ')';
-        }
-      });
-      document.getElementById('refreshBtn').addEventListener('click', refresh);
+      const reload = () =>
+        api
+          .readLog()
+          .then((tail) => {
+            lines = tail.slice(-MAX_LINES);
+            render();
+            el.scrollTop = el.scrollHeight;
+          })
+          .catch((error) => {
+            note.textContent = String((error && error.message) || error);
+          });
+      pauseBox.addEventListener('change', () => (pauseBox.checked ? render() : reload()));
       if (!api) {
         note.textContent = 'Log bridge is unavailable in this window.';
       } else {
-        refresh();
-        setInterval(() => {
-          if (!pauseBox.checked) {
-            refresh();
+        api.onLogLines((added) => {
+          if (pauseBox.checked) {
+            return;
           }
-        }, 2000);
+          lines = lines.concat(added).slice(-MAX_LINES);
+          render();
+        });
+        reload();
       }
     </script>
   </body>

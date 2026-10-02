@@ -72,6 +72,20 @@ describe('sync-config redaction', () => {
     assert.equal(redacted.baseUrl, 'https://example.com');
   });
 
+  it('names the token account with a masked email and never the token itself', () => {
+    const payload = Buffer.from(
+      JSON.stringify({ userId: 12, email: 'jwebstas@example.com', tokenVersion: 0 }),
+    ).toString('base64url');
+    const redacted = redactSyncConfig({ accessToken: `hdr.${payload}.sig` });
+    assert.equal(redacted.account, 'user #12 (jw***@example.com)');
+  });
+
+  it('omits the account for a token that is not a JWT', () => {
+    assert.equal(redactSyncConfig({ accessToken: 'opaque' }).account, undefined);
+    assert.equal(redactSyncConfig({ accessToken: 'a.!!!.c' }).account, undefined);
+    assert.equal(redactSyncConfig({}).account, undefined);
+  });
+
   it('promotes a saved masterPassword to encryptKey without persisting it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sp-bridge-cfg-'));
     try {

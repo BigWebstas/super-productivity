@@ -37,7 +37,7 @@ import '../platform/agent-log-file';
 import '../platform/headless-globals-install';
 import '@angular/compiler';
 
-import { agentLogPath, readLogTail } from '../platform/agent-log-file';
+import { agentLogPath, onLogLine, readLogTail } from '../platform/agent-log-file';
 
 import {
   app,
@@ -54,6 +54,10 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { startAgent, type StartedAgent } from '../main';
 import { loadSyncConfig, redactSyncConfig } from '../sync/sync-config';
+import { BridgeUpdater, isAutoUpdateSupported, type UpdateState } from './updater';
+import { PROJECT_FEATURE_NAME } from '../../../../src/app/features/project/store/project.reducer';
+import { TAG_FEATURE_NAME } from '../../../../src/app/features/tag/store/tag.reducer';
+import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
 import type {
   RendererAppInfo,
   RendererSettings,
@@ -67,6 +71,7 @@ let statusWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
 let logWindow: BrowserWindow | null = null;
 let agent: StartedAgent | null = null;
+let updater: BridgeUpdater | null = null;
 
 const preloadPath = (): string => join(__dirname, 'preload.js');
 
@@ -159,7 +164,27 @@ const showLogWindow = (): void => {
     },
   });
   logWindow.loadFile(getHtmlPath('log.html'));
+  // Stream new lines to the window, batched so a burst (a resync dumps
+  // hundreds) is a few IPC messages rather than one per line.
+  const target = logWindow;
+  let pending: string[] = [];
+  let flushTimer: NodeJS.Timeout | null = null;
+  const unsubscribe = onLogLine((line) => {
+    pending.push(line);
+    flushTimer ??= setTimeout(() => {
+      flushTimer = null;
+      const batch = pending;
+      pending = [];
+      if (!target.isDestroyed()) {
+        target.webContents.send('sp-bridge:log-lines', batch);
+      }
+    }, 250);
+  });
   logWindow.on('closed', () => {
+    unsubscribe();
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+    }
     logWindow = null;
   });
 };
@@ -189,14 +214,47 @@ const showStatusWindow = (): void => {
   });
 };
 
-const buildTray = (): void => {
-  // 16x16 keeps the tray light; the same file also serves as the installer icon
-  // at 256x256 (electron-builder scales, and Windows scales tray icons anyway).
-  const iconPath = join(__dirname, 'icon.png');
-  const image = nativeImage.createFromPath(iconPath);
-  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
-  tray.setToolTip('SP Bridge');
-  tray.setContextMenu(
+const updateMenuItems = (): Electron.MenuItemConstructorOptions[] => {
+  if (!updater) {
+    return [];
+  }
+  const state = updater.state;
+  if (state.kind === 'ready') {
+    return [
+      {
+        label: `Restart to install update ${state.version}`,
+        click: () => updater?.install(),
+      },
+      { type: 'separator' },
+    ];
+  }
+  return [
+    {
+      label: describeUpdateState(state) ?? 'Check for updates',
+      enabled: state.kind !== 'checking' && state.kind !== 'downloading',
+      click: () => void updater?.check(),
+    },
+    { type: 'separator' },
+  ];
+};
+
+const describeUpdateState = (state: UpdateState): string | null => {
+  switch (state.kind) {
+    case 'checking':
+      return 'Checking for updates…';
+    case 'downloading':
+      return `Downloading update ${state.version}…`;
+    case 'ready':
+      return `Update ${state.version} ready — restart to install`;
+    case 'error':
+      return 'Update check failed — retry';
+    default:
+      return null;
+  }
+};
+
+const buildTrayMenu = (): void => {
+  tray?.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Show status', click: showStatusWindow },
       { label: 'Settings…', click: showSettingsWindow },
@@ -244,6 +302,7 @@ const buildTray = (): void => {
         },
       },
       { type: 'separator' },
+      ...updateMenuItems(),
       {
         label: 'Quit',
         click: () => {
@@ -252,6 +311,20 @@ const buildTray = (): void => {
       },
     ]),
   );
+  tray?.setToolTip(
+    updater?.state.kind === 'ready'
+      ? `SP Bridge — update ${updater.state.version} ready`
+      : `SP Bridge ${app.getVersion()}`,
+  );
+};
+
+const buildTray = (): void => {
+  // 16x16 keeps the tray light; the same file also serves as the installer icon
+  // at 256x256 (electron-builder scales, and Windows scales tray icons anyway).
+  const iconPath = join(__dirname, 'icon.png');
+  const image = nativeImage.createFromPath(iconPath);
+  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
+  buildTrayMenu();
   tray.on('click', showStatusWindow);
 };
 
@@ -270,6 +343,11 @@ const buildAppMenu = (): void => {
         label: 'File',
         submenu: [
           { label: 'Settings…', click: showSettingsWindow },
+          {
+            label: 'Check for updates',
+            enabled: isAutoUpdateSupported(),
+            click: () => void updater?.check(),
+          },
           { type: 'separator' },
           { role: 'quit' },
         ],
@@ -370,7 +448,7 @@ ipcMain.handle('sp-bridge:open-log', () => {
   showLogWindow();
 });
 
-ipcMain.handle('sp-bridge:read-log', (): string[] => readLogTail(300));
+ipcMain.handle('sp-bridge:read-log', (): string[] => readLogTail(1000));
 
 ipcMain.handle(
   'sp-bridge:sync',
@@ -435,6 +513,14 @@ ipcMain.handle('sp-bridge:get-info', (): RendererAppInfo => {
   };
 });
 
+ipcMain.handle('sp-bridge:get-update-status', (): string | null =>
+  updater ? describeUpdateState(updater.state) : null,
+);
+
+ipcMain.handle('sp-bridge:install-update', () => {
+  updater?.install();
+});
+
 ipcMain.handle('sp-bridge:copy-text', (_event, text: string) => {
   clipboard.writeText(text);
   return true;
@@ -443,48 +529,19 @@ ipcMain.handle('sp-bridge:copy-text', (_event, text: string) => {
 ipcMain.handle('sp-bridge:get-status', (): RendererStatus => {
   const engine = agent?.sync;
   const status = engine?.status();
-  const state = agent?.store.state as unknown as {
-    projects?: { ids?: string[]; entities?: Record<string, unknown> };
-    project?: { ids?: string[]; entities?: Record<string, unknown> };
-    tag?: { ids?: string[]; entities?: Record<string, unknown> };
-    tags?: { ids?: string[]; entities?: Record<string, unknown> };
-    tasks?: { ids?: string[]; entities?: Record<string, unknown> };
-    task?: { ids?: string[]; entities?: Record<string, unknown> };
-  };
-  const taskMap = (state?.tasks?.entities || state?.task?.entities || {}) as Record<
-    string,
-    { projectId?: string | null; tagIds?: string[] }
-  >;
-  const projSet = new Set(
-    Object.keys(state?.projects?.entities || state?.project?.entities || {}),
-  );
-  const tagSet = new Set(
-    Object.keys(state?.tag?.entities || state?.tags?.entities || {}),
-  );
-  for (const t of Object.values(taskMap)) {
-    if (t.projectId && t.projectId !== 'INBOX' && t.projectId !== 'INBOX_PROJECT') {
-      projSet.add(t.projectId);
-    }
-    if (Array.isArray(t.tagIds)) {
-      for (const tid of t.tagIds) {
-        if (tid && tid !== 'TODAY') {
-          tagSet.add(tid);
-        }
-      }
-    }
-  }
-  const projectCount = projSet.size;
-  const tagCount = tagSet.size;
-  const taskCount = Object.keys(taskMap).length;
-
+  const count = (slice: unknown): number =>
+    (slice as { ids?: unknown[] } | undefined)?.ids?.length ?? 0;
   return {
     lastSyncAt: status?.lastSyncAt ?? null,
     lastErrorCode: status?.lastErrorCode ?? null,
     pendingUpload: status?.pendingUpload ?? agent?.opLog.pendingUpload().length ?? 0,
     syncEnabled: !!engine,
-    projectCount,
-    taskCount,
-    tagCount,
+    account: agent
+      ? (redactSyncConfig(loadSyncConfig(agent.dataDir)).account ?? null)
+      : null,
+    projectCount: count(agent?.store.state[PROJECT_FEATURE_NAME]),
+    taskCount: count(agent?.store.state[TASK_FEATURE_NAME]),
+    tagCount: count(agent?.store.state[TAG_FEATURE_NAME]),
   };
 });
 
@@ -512,6 +569,10 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  if (isAutoUpdateSupported()) {
+    updater = new BridgeUpdater(() => buildTrayMenu());
+    updater.start();
+  }
   buildTray();
   buildAppMenu();
   showStatusWindow();
@@ -529,6 +590,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', (event) => {
+  updater?.stop();
   tray?.destroy();
   tray = null;
   const stopping = agent;

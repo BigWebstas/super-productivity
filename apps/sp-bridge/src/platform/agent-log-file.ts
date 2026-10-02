@@ -27,6 +27,17 @@ import { BRIDGE_LOG_FILENAME, defaultDataDir, migrateLegacyDataDir } from './dat
 const MAX_LOG_BYTES = 1024 * 1024;
 
 let logFilePath: string | null = null;
+const lineListeners = new Set<(line: string) => void>();
+
+/**
+ * Receives every log line as it is written (without the trailing newline), so
+ * the log window can stream instead of re-reading the file. Returns the
+ * unsubscribe.
+ */
+export const onLogLine = (listener: (line: string) => void): (() => void) => {
+  lineListeners.add(listener);
+  return () => lineListeners.delete(listener);
+};
 
 export const agentLogPath = (): string | null => logFilePath;
 
@@ -73,6 +84,13 @@ const tee =
         })
         .join(' ');
     write(`${line}\n`);
+    for (const listener of lineListeners) {
+      try {
+        listener(line);
+      } catch {
+        // A closing window must not break logging.
+      }
+    }
     original(...args);
   };
 

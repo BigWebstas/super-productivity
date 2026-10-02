@@ -127,6 +127,14 @@ jobs:
 
       # electron-builder downloads the pinned Electron runtime and the NSIS
       # toolchain on first use.
+      # Each CI build gets its own version so the in-app updater can tell
+      # builds apart (it compares against `app.getVersion()`, which comes from
+      # package.json). Local builds stay at the checked-in 0.1.0 and therefore
+      # update to the first published release.
+      - name: Stamp version
+        shell: bash
+        run: npm version "0.1.${{ github.run_number }}" --no-git-tag-version
+
       - name: Build installer
         run: npx electron-builder --config electron-builder.yaml --win --x64
         env:
@@ -156,3 +164,35 @@ jobs:
           path: apps/sp-bridge/release/*.exe
           if-no-files-found: error
           retention-days: 30
+
+  # Publishes pushes to sp-bridge as a GitHub release, which is what the
+  # bridge's auto-updater (src/update/update-check.ts) polls. Kept as its own
+  # job so only this step holds write access — the build never does, and pull
+  # requests never publish.
+  publish-release:
+    name: Publish release
+    needs: windows-installer
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sp-bridge-windows-x64
+          path: installer
+
+      # Prerelease so it never becomes the repo's "Latest" release, which the
+      # Super Productivity app itself would read. The updater lists releases
+      # and filters on the sp-bridge-v tag prefix instead.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          gh release create "sp-bridge-v${VERSION}" installer/*.exe \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            --title "SP Bridge ${VERSION}" \
+            --notes "Automated build of ${{ github.sha }} from the sp-bridge branch."

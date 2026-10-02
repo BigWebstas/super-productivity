@@ -129,7 +129,54 @@ export interface RedactedSyncConfig {
   expiresAt?: number;
   syncIntervalMs?: number;
   syncOnLocalChange?: boolean;
+  /**
+   * Which SuperSync account the token belongs to, e.g. `user #12 (jw***@gmail.com)`.
+   * Shown so a bridge set up with another device's account is obvious at a
+   * glance; the email is masked because the log gets pasted into chats.
+   */
+  account?: string;
 }
+
+/**
+ * Reads the account from a SuperSync access token (a JWT carrying `userId`
+ * and `email`). Display only: the payload is NOT verified — the server does
+ * that on every request — so this must never feed an authorization decision.
+ */
+export const describeTokenAccount = (
+  accessToken: string | undefined,
+): string | undefined => {
+  const payloadPart = accessToken?.split('.')[1];
+  if (!payloadPart) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(
+      Buffer.from(payloadPart, 'base64url').toString('utf8'),
+    ) as {
+      userId?: unknown;
+      email?: unknown;
+    };
+    const userId = typeof payload.userId === 'number' ? payload.userId : undefined;
+    const email =
+      typeof payload.email === 'string' ? maskEmail(payload.email) : undefined;
+    if (userId === undefined && !email) {
+      return undefined;
+    }
+    return [userId !== undefined ? `user #${userId}` : '', email ? `(${email})` : '']
+      .filter(Boolean)
+      .join(' ');
+  } catch {
+    return undefined;
+  }
+};
+
+const maskEmail = (email: string): string => {
+  const at = email.lastIndexOf('@');
+  if (at < 1) {
+    return '***';
+  }
+  return `${email.slice(0, Math.min(2, at))}***${email.slice(at)}`;
+};
 
 export const redactSyncConfig = (cfg: BridgeSyncConfig): RedactedSyncConfig => ({
   baseUrl: cfg.baseUrl,
@@ -140,6 +187,7 @@ export const redactSyncConfig = (cfg: BridgeSyncConfig): RedactedSyncConfig => (
   expiresAt: cfg.expiresAt,
   syncIntervalMs: cfg.syncIntervalMs,
   syncOnLocalChange: cfg.syncOnLocalChange,
+  account: describeTokenAccount(cfg.accessToken),
 });
 
 export class SyncConfigValidationError extends Error {

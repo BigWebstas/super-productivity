@@ -161,6 +161,55 @@ const getQueryObject = (url: URL): Record<string, string | string[]> => {
   return query;
 };
 
+/** Body fields that must never reach the log, at any depth. */
+const SECRET_KEYS = new Set([
+  'accesstoken',
+  'refreshtoken',
+  'encryptkey',
+  'masterpassword',
+  'password',
+  'token',
+]);
+const MAX_LOGGED_BODY_CHARS = 2000;
+
+const redactSecrets = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(redactSecrets);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, inner]) => [
+        key,
+        SECRET_KEYS.has(key.toLowerCase()) ? '[redacted]' : redactSecrets(inner),
+      ]),
+    );
+  }
+  return value;
+};
+
+/**
+ * One log line per API call: what was asked, what came back, how long it took,
+ * and the request body with secrets replaced and size capped. The bearer
+ * token is never part of it.
+ */
+export const formatApiLogLine = (call: {
+  method: string;
+  pathWithQuery: string;
+  status: number;
+  durationMs: number;
+  body: unknown;
+}): string => {
+  let line = `[api] ${call.method} ${call.pathWithQuery} -> ${call.status} (${call.durationMs}ms)`;
+  if (call.body !== undefined) {
+    let json = JSON.stringify(redactSecrets(call.body));
+    if (json.length > MAX_LOGGED_BODY_CHARS) {
+      json = `${json.slice(0, MAX_LOGGED_BODY_CHARS)}… (${json.length} chars)`;
+    }
+    line += ` body=${json}`;
+  }
+  return line;
+};
+
 const readJsonBody = async (req: IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
@@ -258,6 +307,23 @@ export class LocalRestApiServer {
   private async _handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${this._host}`);
     const method = req.method ?? 'GET';
+    const startedAt = Date.now();
+    let body: unknown;
+    // /health is what scripts poll to see if the bridge is up; logging it would
+    // bury every real call.
+    if (url.pathname !== '/health') {
+      res.once('finish', () => {
+        console.log(
+          formatApiLogLine({
+            method,
+            pathWithQuery: url.pathname + url.search,
+            status: res.statusCode,
+            durationMs: Date.now() - startedAt,
+            body,
+          }),
+        );
+      });
+    }
 
     // DNS rebinding: a browser on another origin can be pointed at loopback, so
     // the Host header must be one we expect. Checked before /health too: the
@@ -320,7 +386,6 @@ export class LocalRestApiServer {
         return;
       }
 
-      let body: unknown;
       try {
         body = await readJsonBody(req);
       } catch (error) {

@@ -6,7 +6,7 @@ import { request as httpRequest } from 'node:http';
 import { describe, it } from '../test/harness';
 import { AgentStore } from '../store/agent-store';
 import { createRouteHandler, type RouterDeps } from './router';
-import { LocalRestApiServer, parseBearerToken } from './server';
+import { formatApiLogLine, LocalRestApiServer, parseBearerToken } from './server';
 import { FileTaskArchive } from '../archive/archive-store';
 import { SyncBusyError } from '../sync/engine';
 import { SyncConfigValidationError } from '../sync/sync-config';
@@ -96,6 +96,51 @@ const withServer = async (
 const taskById = (store: AgentStore, id: string): any =>
   (store.state[TASK_FEATURE_NAME] as unknown as { entities: Record<string, unknown> })
     .entities[id];
+
+describe('formatApiLogLine', () => {
+  it('logs the call, status, timing and body with secrets redacted at any depth', () => {
+    const line = formatApiLogLine({
+      method: 'POST',
+      pathWithQuery: '/sync/config?x=1',
+      status: 200,
+      durationMs: 7,
+      body: {
+        baseUrl: 'https://s',
+        accessToken: 'tok-1',
+        nested: [{ masterPassword: 'pw' }],
+      },
+    });
+    assert.equal(
+      line,
+      '[api] POST /sync/config?x=1 -> 200 (7ms) ' +
+        'body={"baseUrl":"https://s","accessToken":"[redacted]","nested":[{"masterPassword":"[redacted]"}]}',
+    );
+    assert.equal(line.includes('tok-1'), false);
+    assert.equal(line.includes('"pw"'), false);
+  });
+
+  it('omits an absent body and caps a large one', () => {
+    assert.equal(
+      formatApiLogLine({
+        method: 'GET',
+        pathWithQuery: '/tasks',
+        status: 200,
+        durationMs: 1,
+        body: undefined,
+      }),
+      '[api] GET /tasks -> 200 (1ms)',
+    );
+    const big = formatApiLogLine({
+      method: 'POST',
+      pathWithQuery: '/tasks',
+      status: 201,
+      durationMs: 1,
+      body: { title: 'x'.repeat(5000) },
+    });
+    assert.ok(big.length < 2200);
+    assert.match(big, /… \(\d+ chars\)$/);
+  });
+});
 
 describe('parseBearerToken', () => {
   it('accepts the scheme case-insensitively with one or more spaces', () => {

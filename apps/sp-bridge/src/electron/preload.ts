@@ -40,6 +40,8 @@ export interface RendererStatus {
   lastErrorCode: string | null;
   pendingUpload: number;
   syncEnabled: boolean;
+  /** SuperSync account of the configured token, e.g. `user #12 (jw***@gmail.com)`. */
+  account: string | null;
   projectCount: number;
   taskCount: number;
   tagCount: number;
@@ -60,6 +62,10 @@ export interface RendererBridgeApi {
   openSettings: () => Promise<void>;
   openLog: () => Promise<void>;
   readLog: () => Promise<string[]>;
+  /** Streams new log lines as they are written; returns the unsubscribe. */
+  onLogLines: (listener: (lines: string[]) => void) => () => void;
+  getUpdateStatus: () => Promise<string | null>;
+  installUpdate: () => Promise<void>;
   copyText: (text: string) => Promise<boolean>;
   getStatus: () => Promise<RendererStatus>;
   triggerSync: () => Promise<
@@ -78,6 +84,13 @@ const api: RendererBridgeApi = {
   openSettings: () => ipcRenderer.invoke('sp-bridge:open-settings'),
   openLog: () => ipcRenderer.invoke('sp-bridge:open-log'),
   readLog: () => ipcRenderer.invoke('sp-bridge:read-log'),
+  onLogLines: (listener) => {
+    const handler = (_event: unknown, lines: string[]): void => listener(lines);
+    ipcRenderer.on('sp-bridge:log-lines', handler);
+    return () => ipcRenderer.removeListener('sp-bridge:log-lines', handler);
+  },
+  getUpdateStatus: () => ipcRenderer.invoke('sp-bridge:get-update-status'),
+  installUpdate: () => ipcRenderer.invoke('sp-bridge:install-update'),
   copyText: (text: string) => ipcRenderer.invoke('sp-bridge:copy-text', text),
   getStatus: () => ipcRenderer.invoke('sp-bridge:get-status'),
   triggerSync: () => ipcRenderer.invoke('sp-bridge:sync'),
