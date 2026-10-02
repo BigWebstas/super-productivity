@@ -181,6 +181,63 @@ export const initialTaskState: TaskState = taskAdapter.getInitialState({
   dismissedCalendarAutoImportEventIdsByProvider: {},
 }) as TaskState;
 
+const _normalizeTaskState = (incoming: unknown): TaskState | undefined => {
+  if (!incoming) return undefined;
+  if (Array.isArray(incoming)) {
+    const valid = incoming
+      .map((item) =>
+        item &&
+        typeof item === 'object' &&
+        'task' in item &&
+        typeof (item as { task?: unknown }).task === 'object'
+          ? (item as { task: unknown }).task
+          : item,
+      )
+      .filter(
+        (t): t is Task =>
+          !!t && typeof t === 'object' && typeof (t as Task).id === 'string',
+      );
+    return taskAdapter.setAll(valid, initialTaskState);
+  }
+  if (typeof incoming === 'object') {
+    const inc = incoming as Record<string, unknown>;
+    if (inc.entities && typeof inc.entities === 'object') {
+      const rawEntities = inc.entities as Record<string, unknown>;
+      const entities: Record<string, Task> = {};
+      for (const [id, val] of Object.entries(rawEntities)) {
+        if (!val || typeof val !== 'object') continue;
+        const unwrapped =
+          'task' in val && val.task && typeof val.task === 'object'
+            ? (val.task as Task)
+            : (val as Task);
+        entities[id] = unwrapped;
+      }
+      const entityKeys = Object.keys(entities);
+      const ids = Array.isArray(inc.ids)
+        ? Array.from(new Set([...(inc.ids as string[]), ...entityKeys]))
+        : entityKeys;
+      return { ...inc, ids, entities } as TaskState;
+    }
+    const values = Object.values(inc)
+      .map((item) =>
+        item &&
+        typeof item === 'object' &&
+        'task' in item &&
+        typeof (item as { task?: unknown }).task === 'object'
+          ? (item as { task: unknown }).task
+          : item,
+      )
+      .filter(
+        (t): t is Task =>
+          !!t && typeof t === 'object' && typeof (t as Task).id === 'string',
+      );
+    if (values.length > 0) {
+      return taskAdapter.setAll(values, initialTaskState);
+    }
+  }
+  return undefined;
+};
+
 export const taskReducer = createReducer<TaskState>(
   initialTaskState,
 
@@ -190,7 +247,8 @@ export const taskReducer = createReducer<TaskState>(
   // META ACTIONS
   // ------------
   on(loadAllData, (state, { appDataComplete }) => {
-    const task = appDataComplete.task ?? (appDataComplete as { tasks?: TaskState }).tasks;
+    const raw = appDataComplete.task ?? (appDataComplete as { tasks?: TaskState }).tasks;
+    const task = _normalizeTaskState(raw);
     if (!task) return state;
     // Sanitize: ensure ids only contains IDs that have entities
     const ids = Array.isArray(task.ids) ? (task.ids as string[]) : [];

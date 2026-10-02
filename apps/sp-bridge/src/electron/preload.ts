@@ -35,6 +35,16 @@ export interface RendererSyncResult {
   uploaded: number;
 }
 
+export interface RendererStatus {
+  lastSyncAt: number | null;
+  lastErrorCode: string | null;
+  pendingUpload: number;
+  syncEnabled: boolean;
+  projectCount: number;
+  taskCount: number;
+  tagCount: number;
+}
+
 export interface RendererBridgeApi {
   getSettings: () => Promise<{ ok: true; settings: RendererSettings }>;
   saveSettings: (
@@ -43,6 +53,8 @@ export interface RendererBridgeApi {
   openSettings: () => Promise<void>;
   openLog: () => Promise<void>;
   readLog: () => Promise<string[]>;
+  copyText: (text: string) => Promise<boolean>;
+  getStatus: () => Promise<RendererStatus>;
   triggerSync: () => Promise<
     { ok: true; result: RendererSyncResult } | { ok: false; error: string }
   >;
@@ -58,6 +70,8 @@ const api: RendererBridgeApi = {
   openSettings: () => ipcRenderer.invoke('sp-bridge:open-settings'),
   openLog: () => ipcRenderer.invoke('sp-bridge:open-log'),
   readLog: () => ipcRenderer.invoke('sp-bridge:read-log'),
+  copyText: (text: string) => ipcRenderer.invoke('sp-bridge:copy-text', text),
+  getStatus: () => ipcRenderer.invoke('sp-bridge:get-status'),
   triggerSync: () => ipcRenderer.invoke('sp-bridge:sync'),
   resync: () => ipcRenderer.invoke('sp-bridge:resync'),
 };

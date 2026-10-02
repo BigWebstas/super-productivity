@@ -24,6 +24,7 @@ import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
 import { FileTaskArchive } from './archive/archive-store';
 import { FocusTicker } from './focus/focus-ticker';
 import { createBridgeSyncProvider } from './sync/provider';
+import { FileSeqStorage } from './sync/seq-storage';
 import {
   SyncBusyError,
   SyncEngine,
@@ -128,8 +129,9 @@ export const startAgent = async (
     const cfg = loadSyncConfig(dataDir);
     if (isSyncConfigured(cfg)) {
       if (!sync) {
-        const provider = createBridgeSyncProvider(dataDir);
-        sync = new SyncEngine({ store, opLog, provider, archive });
+        const seqStorage = new FileSeqStorage(dataDir);
+        const provider = createBridgeSyncProvider(dataDir, seqStorage);
+        sync = new SyncEngine({ store, opLog, provider, archive, seqStorage });
       } else {
         sync.bumpEpoch();
       }

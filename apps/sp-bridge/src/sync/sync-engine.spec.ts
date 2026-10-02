@@ -8,6 +8,7 @@ import { FileTaskArchive } from '../archive/archive-store';
 import { OpLogStore } from '../oplog/op-log-store';
 import { buildOperation } from '../oplog/operation-factory';
 import { SyncEngine } from './engine';
+import { FileSeqStorage } from './seq-storage';
 import { WorkContextType } from '../../../../src/app/features/work-context/work-context.model';
 import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
 import { PROJECT_FEATURE_NAME } from '../../../../src/app/features/project/store/project.reducer';
@@ -178,6 +179,7 @@ const setup = async (
   opLog: OpLogStore;
   engine: SyncEngine;
   archive: FileTaskArchive;
+  seqStorage: FileSeqStorage;
 }> => {
   const opLog = OpLogStore.open(dir, {}, fixedId(LOCAL_ID));
   const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
@@ -187,13 +189,15 @@ const setup = async (
     opLog.recordLocalClock(store.vectorClock);
   });
   const archive = new FileTaskArchive(dir);
+  const seqStorage = new FileSeqStorage(dir);
   const engine = new SyncEngine({
     store,
     opLog,
     provider: stubProvider(server),
     archive,
+    seqStorage,
   });
-  return { store, opLog, engine, archive };
+  return { store, opLog, engine, archive, seqStorage };
 };
 
 const taskTitle = (store: AgentStore, id: string): string | undefined =>
@@ -1027,6 +1031,36 @@ describe('sync-errors', () => {
       ).entities;
       assert.equal(projects['p_flat']?.title, 'Flat Project');
       assert.equal(tags['t_flat']?.title, 'Flat Tag');
+    });
+  });
+
+  it('persists and restores lastSyncAt across engine restarts', async () => {
+    return withDirs(async (dir) => {
+      const server = makeStubServer();
+      const { store, opLog, engine, archive, seqStorage } = await setup(dir, server);
+
+      assert.equal(engine.lastSyncAt, null);
+      assert.equal(seqStorage.getLastSyncAt(), null);
+
+      await engine.syncNow('test-last-sync');
+
+      const syncedAt = engine.lastSyncAt;
+      assert.ok(typeof syncedAt === 'number' && syncedAt > 0);
+      assert.equal(seqStorage.getLastSyncAt(), syncedAt);
+
+      // Verify disk persistence with fresh FileSeqStorage
+      const freshStorage = new FileSeqStorage(dir);
+      assert.equal(freshStorage.getLastSyncAt(), syncedAt);
+
+      // Verify engine restoration on startup
+      const restartedEngine = new SyncEngine({
+        store,
+        opLog,
+        provider: stubProvider(server),
+        archive,
+        seqStorage: freshStorage,
+      });
+      assert.equal(restartedEngine.lastSyncAt, syncedAt);
     });
   });
 });

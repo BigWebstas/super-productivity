@@ -25,7 +25,10 @@ import {
 import { FileCredentialStore } from './credential-store';
 import { FileSeqStorage } from './seq-storage';
 
-export const createBridgeSyncProvider = (dataDir: string): SuperSyncProvider => {
+export const createBridgeSyncProvider = (
+  dataDir: string,
+  seqStorage?: FileSeqStorage,
+): SuperSyncProvider => {
   const responseValidators: SuperSyncDeps['responseValidators'] = {
     validateOpUpload: validateOpUploadResponse,
     validateOpDownload: validateOpDownloadResponse,
@@ -53,7 +56,7 @@ export const createBridgeSyncProvider = (dataDir: string): SuperSyncProvider => 
       // if the platform flags ever change.
       throw new Error('[sync] Native HTTP executor is not available in the bridge');
     },
-    storage: new FileSeqStorage(dataDir),
+    storage: seqStorage ?? new FileSeqStorage(dataDir),
     responseValidators,
     // Host owns the SP-specific fallback; the package never assumes it.
     defaultBaseUrl: SUPER_SYNC_DEFAULT_BASE_URL,

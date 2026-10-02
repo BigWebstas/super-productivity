@@ -3,6 +3,7 @@ import {
   extractActionPayload,
   FULL_STATE_OP_TYPES,
   isLwwUpdatePayload,
+  isMultiEntityPayload,
   Operation,
   OpType,
 } from '../core/operation.types';
@@ -63,13 +64,18 @@ export const ACTION_TYPE_ALIASES: Record<string, string> = {
  * - Legacy format: payload IS the appDataComplete directly
  */
 const extractFullStatePayload = (payload: unknown): Record<string, unknown> => {
-  // Check if payload already has appDataComplete wrapper
-  if (typeof payload === 'object' && payload !== null && 'appDataComplete' in payload) {
-    // Already wrapped - return as-is
-    return payload as Record<string, unknown>;
+  let raw: unknown = payload;
+  if (isMultiEntityPayload(raw)) {
+    raw = raw.actionPayload;
   }
-  // Legacy format: payload is the appDataComplete directly, wrap it
-  return { appDataComplete: payload };
+  if (isRecord(raw) && 'appDataComplete' in raw) {
+    let unwrapped = raw['appDataComplete'];
+    while (isRecord(unwrapped) && 'appDataComplete' in unwrapped) {
+      unwrapped = unwrapped['appDataComplete'];
+    }
+    return { appDataComplete: unwrapped };
+  }
+  return { appDataComplete: raw };
 };
 
 const addLegacyPlanForTodayDate = (
@@ -328,6 +334,21 @@ export const convertOpToAction = (
     delete actionPayload['id'];
   }
 
+  // For LWW operations, if entity data is nested under payloadKey (e.g. { project: {...} } or { tag: {...} }),
+  // unnest it to the top level so that id, title, and other entity properties are directly accessible.
+  if (lwwEntityType && isRecord(actionPayload)) {
+    const payloadKey = getEntityConfig(lwwEntityType)?.payloadKey;
+    if (
+      payloadKey &&
+      typeof actionPayload[payloadKey] === 'object' &&
+      actionPayload[payloadKey] !== null &&
+      !Array.isArray(actionPayload[payloadKey])
+    ) {
+      const nested = actionPayload[payloadKey] as Record<string, unknown>;
+      actionPayload = { ...nested, ...actionPayload };
+    }
+  }
+
   // Force `payload.id = op.entityId` for adapter- and array-backed LWW Update
   // ops (arrays since #9526). The op's `entityId` is the canonical identifier
   // for both — producers also enforce this when creating ops, but a
@@ -357,6 +378,27 @@ export const convertOpToAction = (
         typeof payloadId === 'string' ? payloadId : `<${getValueType(payloadId)}>`,
     });
     actionPayload = { ...actionPayload, id: op.entityId };
+  }
+
+  // Ensure op.entityId is propagated to actionPayload and nested entity objects if id is missing
+  if (!isFullStateOp && op.entityId && isRecord(actionPayload)) {
+    if (!actionPayload['id'] && !isSingletonLww) {
+      actionPayload = { ...actionPayload, id: op.entityId };
+    }
+    for (const subKey of ['project', 'tag', 'task'] as const) {
+      if (
+        isRecord(actionPayload[subKey]) &&
+        !(actionPayload[subKey] as Record<string, unknown>)['id']
+      ) {
+        actionPayload = {
+          ...actionPayload,
+          [subKey]: {
+            ...(actionPayload[subKey] as Record<string, unknown>),
+            id: op.entityId,
+          },
+        };
+      }
+    }
   }
 
   // IMPORTANT: Spread actionPayload FIRST, then set type, to prevent entity properties

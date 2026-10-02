@@ -52,7 +52,7 @@ import {
   moveNoteToOtherProject,
   updateNoteOrder,
 } from '../../note/store/note.actions';
-import { INBOX_PROJECT } from '../project.const';
+import { DEFAULT_PROJECT, INBOX_PROJECT } from '../project.const';
 import { Log } from '../../../core/log';
 
 export const PROJECT_FEATURE_NAME = 'projects';
@@ -89,15 +89,73 @@ export const initialProjectState: ProjectState = _addInboxProjectIfNecessary(
   }),
 );
 
+const _normalizeProjectState = (incoming: unknown): ProjectState | undefined => {
+  if (!incoming) return undefined;
+  if (Array.isArray(incoming)) {
+    const valid = incoming
+      .map((item) =>
+        item &&
+        typeof item === 'object' &&
+        'project' in item &&
+        typeof (item as { project?: unknown }).project === 'object'
+          ? (item as { project: unknown }).project
+          : item,
+      )
+      .filter(
+        (p): p is Project =>
+          !!p && typeof p === 'object' && typeof (p as Project).id === 'string',
+      );
+    return projectAdapter.setAll(valid, initialProjectState);
+  }
+  if (typeof incoming === 'object') {
+    const inc = incoming as Record<string, unknown>;
+    if (inc.entities && typeof inc.entities === 'object') {
+      const rawEntities = inc.entities as Record<string, unknown>;
+      const entities: Record<string, Project> = {};
+      for (const [id, val] of Object.entries(rawEntities)) {
+        if (!val || typeof val !== 'object') continue;
+        const unwrapped =
+          'project' in val && val.project && typeof val.project === 'object'
+            ? (val.project as Project)
+            : (val as Project);
+        entities[id] = unwrapped;
+      }
+      const entityKeys = Object.keys(entities);
+      const ids = Array.isArray(inc.ids)
+        ? Array.from(new Set([...(inc.ids as string[]), ...entityKeys]))
+        : entityKeys;
+      return { ...inc, ids, entities } as ProjectState;
+    }
+    const values = Object.values(inc)
+      .map((item) =>
+        item &&
+        typeof item === 'object' &&
+        'project' in item &&
+        typeof (item as { project?: unknown }).project === 'object'
+          ? (item as { project: unknown }).project
+          : item,
+      )
+      .filter(
+        (p): p is Project =>
+          !!p && typeof p === 'object' && typeof (p as Project).id === 'string',
+      );
+    if (values.length > 0) {
+      return projectAdapter.setAll(values, initialProjectState);
+    }
+  }
+  return undefined;
+};
+
 export const projectReducer = createReducer<ProjectState>(
   initialProjectState,
 
   // META ACTIONS
   // ------------
   on(loadAllData, (oldState, { appDataComplete }) => {
-    const incoming =
+    const raw =
       appDataComplete.project ??
       (appDataComplete as { projects?: ProjectState }).projects;
+    const incoming = _normalizeProjectState(raw);
     return _addInboxProjectIfNecessary(incoming ? incoming : oldState);
   }),
 
@@ -149,22 +207,57 @@ export const projectReducer = createReducer<ProjectState>(
   // Project Actions
   // ------------
   on(addProject, (state, action) => {
-    const project =
+    const raw =
       action.project ??
       ('id' in action && typeof (action as { id?: unknown }).id === 'string'
         ? (action as unknown as Project)
         : undefined);
-    return project ? projectAdapter.addOne(project, state) : state;
+    const project =
+      raw &&
+      typeof raw === 'object' &&
+      'project' in raw &&
+      typeof (raw as { project?: unknown }).project === 'object'
+        ? (raw as { project: Project }).project
+        : raw;
+    if (!project) return state;
+    if (state.entities[project.id]) {
+      return projectAdapter.updateOne({ id: project.id, changes: project }, state);
+    }
+    return projectAdapter.addOne(project, state);
   }),
   on(addProjects, (state, { projects }) => projectAdapter.addMany(projects, state)),
 
   on(updateProject, (state, action) => {
-    const project =
-      action.project ??
-      ('id' in action && 'changes' in action
-        ? (action as unknown as Update<Project>)
-        : undefined);
-    return project ? projectAdapter.updateOne(project, state) : state;
+    let project = action.project;
+    if (
+      project &&
+      typeof project === 'object' &&
+      'project' in project &&
+      typeof (project as { project?: unknown }).project === 'object'
+    ) {
+      project = (project as { project: Update<Project> }).project;
+    }
+    if (!project) {
+      if ('id' in action && 'changes' in action) {
+        project = action as unknown as Update<Project>;
+      } else if ('id' in action && typeof (action as { id?: unknown }).id === 'string') {
+        const { id, ...changes } = action as unknown as {
+          id: string;
+          [key: string]: unknown;
+        };
+        project = { id, changes: changes as Partial<Project> };
+      }
+    }
+    if (!project) return state;
+    if (!state.entities[project.id]) {
+      const fullProject: Project = {
+        ...DEFAULT_PROJECT,
+        ...project.changes,
+        id: project.id as string,
+      };
+      return projectAdapter.addOne(fullProject, state);
+    }
+    return projectAdapter.updateOne(project, state);
   }),
 
   // on(deleteProjects, (state, { ids }) => projectAdapter.removeMany(ids, state)),

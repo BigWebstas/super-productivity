@@ -11,6 +11,8 @@ import { FileTaskArchive } from '../archive/archive-store';
 import { SyncBusyError } from '../sync/engine';
 import { SyncConfigValidationError } from '../sync/sync-config';
 import { INBOX_PROJECT } from '../../../../src/app/features/project/project.const';
+import { addProject } from '../../../../src/app/features/project/store/project.actions';
+import { addTag } from '../../../../src/app/features/tag/store/tag.actions';
 import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
 
 /** Port 0 lets the OS pick a free port, so tests never collide. */
@@ -458,7 +460,7 @@ describe('LocalRestApiServer routes', () => {
   });
 
   it('lists projects and tags', async () => {
-    await withServer(async ({ request }) => {
+    await withServer(async ({ request, store }) => {
       const projects = await request('GET', '/projects');
       assert.equal(projects.status, 200);
       assert.ok(
@@ -469,6 +471,58 @@ describe('LocalRestApiServer routes', () => {
       const tags = await request('GET', '/tags');
       assert.equal(tags.status, 200);
       assert.ok(Array.isArray(tags.body.data));
+
+      // Add a custom project and custom tag
+      store.dispatch(
+        addProject({
+          project: {
+            id: 'p-custom',
+            title: 'Work Project',
+            isArchived: false,
+            isDone: false,
+            taskIds: [],
+            backlogTaskIds: [],
+            noteIds: [],
+          } as never,
+        }),
+      );
+      store.dispatch(
+        addTag({
+          tag: {
+            id: 't-custom',
+            title: 'Urgent Client',
+            taskIds: [],
+            created: Date.now(),
+          } as never,
+        }),
+      );
+
+      const updatedProjects = await request('GET', '/projects');
+      assert.ok(
+        updatedProjects.body.data.some((p: { id: string }) => p.id === 'p-custom'),
+        'Custom project is listed',
+      );
+
+      const searchProjects = await request('GET', '/projects?query=work');
+      assert.equal(searchProjects.body.data.length, 1);
+      assert.equal(searchProjects.body.data[0].id, 'p-custom');
+
+      const updatedTags = await request('GET', '/tags');
+      assert.ok(
+        updatedTags.body.data.some((t: { id: string }) => t.id === 't-custom'),
+        'Custom tag is listed',
+      );
+
+      const searchTags = await request('GET', '/tags?query=urgent');
+      assert.equal(searchTags.body.data.length, 1);
+      assert.equal(searchTags.body.data[0].id, 't-custom');
+
+      // Create a task inside custom project
+      const createdInProject = await request('POST', '/tasks', {
+        body: { title: 'Project task', projectId: 'p-custom' },
+      });
+      assert.equal(createdInProject.status, 201);
+      assert.equal(createdInProject.body.data.projectId, 'p-custom');
     });
   });
 

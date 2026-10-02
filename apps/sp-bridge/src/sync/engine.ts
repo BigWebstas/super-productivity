@@ -172,11 +172,14 @@ export interface SyncEngineStatus {
   pendingUpload: number;
 }
 
+import type { FileSeqStorage } from './seq-storage';
+
 interface EngineDeps {
   store: AgentStore;
   opLog: OpLogStore;
   provider: SuperSyncProvider;
   archive: FileTaskArchive;
+  seqStorage?: FileSeqStorage;
 }
 
 export class SyncEngine {
@@ -196,7 +199,9 @@ export class SyncEngine {
   private _lastTokenFingerprint: string | null = null;
   private _tokenExpiresAt: number | null = null;
 
-  constructor(private readonly _deps: EngineDeps) {}
+  constructor(private readonly _deps: EngineDeps) {
+    this.lastSyncAt = _deps.seqStorage?.getLastSyncAt() ?? null;
+  }
 
   get isRunning(): boolean {
     return this._running;
@@ -313,6 +318,7 @@ export class SyncEngine {
         ? await this._resyncCycle(reason, epoch)
         : await this._cycle(reason, epoch);
       this.lastSyncAt = Date.now();
+      this._deps.seqStorage?.setLastSyncAt(this.lastSyncAt);
       this.lastResult = result;
       this.lastError = null;
       this.lastErrorCode = null;
@@ -523,15 +529,27 @@ export class SyncEngine {
     }
 
     const state = store.state as unknown as {
-      project?: { ids?: string[] };
-      tag?: { ids?: string[] };
-      task?: { ids?: string[] };
+      projects?: { ids?: string[]; entities?: Record<string, unknown> };
+      project?: { ids?: string[]; entities?: Record<string, unknown> };
+      tag?: { ids?: string[]; entities?: Record<string, unknown> };
+      tags?: { ids?: string[]; entities?: Record<string, unknown> };
+      tasks?: { ids?: string[]; entities?: Record<string, unknown> };
+      task?: { ids?: string[]; entities?: Record<string, unknown> };
     };
+    const projCount =
+      Object.keys(state?.projects?.entities || state?.project?.entities || {}).length ||
+      (state?.projects?.ids?.length ?? state?.project?.ids?.length ?? 0);
+    const tagCount =
+      Object.keys(state?.tag?.entities || state?.tags?.entities || {}).length ||
+      (state?.tag?.ids?.length ?? state?.tags?.ids?.length ?? 0);
+    const taskCount =
+      Object.keys(state?.tasks?.entities || state?.task?.entities || {}).length ||
+      (state?.tasks?.ids?.length ?? state?.task?.ids?.length ?? 0);
     console.log(
       `[sync] Resync replay complete. Store entity counts: ` +
-        `projects=${state?.project?.ids?.length ?? 0}, ` +
-        `tags=${state?.tag?.ids?.length ?? 0}, ` +
-        `tasks=${state?.task?.ids?.length ?? 0}`,
+        `projects=${projCount}, ` +
+        `tags=${tagCount}, ` +
+        `tasks=${taskCount}`,
     );
 
     // 6. Fold all contributing vector clocks into store

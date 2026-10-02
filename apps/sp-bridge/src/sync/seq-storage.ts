@@ -24,14 +24,35 @@ const SYNC_STATE_FILE = 'sync-state.json';
 
 interface SyncStateFile {
   lastServerSeqByKey: Record<string, number>;
+  lastSyncAt?: number;
 }
 
 export class FileSeqStorage implements SuperSyncStorage {
   private readonly _filePath: string;
   private _cache: Record<string, number> | null = null;
+  private _lastSyncAt: number | null | undefined = undefined;
 
   constructor(dataDir: string) {
     this._filePath = join(dataDir, SYNC_STATE_FILE);
+  }
+
+  getLastSyncAt(): number | null {
+    if (this._lastSyncAt !== undefined) {
+      return this._lastSyncAt;
+    }
+    const full = this._readFile();
+    this._lastSyncAt =
+      typeof full.lastSyncAt === 'number' && Number.isFinite(full.lastSyncAt)
+        ? full.lastSyncAt
+        : null;
+    return this._lastSyncAt;
+  }
+
+  setLastSyncAt(value: number): void {
+    this._lastSyncAt = value;
+    const full = this._readFile();
+    full.lastSyncAt = value;
+    this._writeFile(full);
   }
 
   getLastServerSeq(key: string): number | null {
@@ -43,41 +64,58 @@ export class FileSeqStorage implements SuperSyncStorage {
   setLastServerSeq(key: string, value: number): void {
     const all = this._read();
     all[key] = value;
-    this._write(all);
+    const full = this._readFile();
+    full.lastServerSeqByKey = all;
+    this._writeFile(full);
   }
 
   removeLastServerSeq(key: string): void {
     const all = this._read();
     if (key in all) {
       delete all[key];
-      this._write(all);
+      const full = this._readFile();
+      full.lastServerSeqByKey = all;
+      this._writeFile(full);
     }
+  }
+
+  private _readFile(): SyncStateFile {
+    try {
+      if (existsSync(this._filePath)) {
+        const parsed = JSON.parse(
+          readFileSync(this._filePath, 'utf8'),
+        ) as Partial<SyncStateFile>;
+        return {
+          lastServerSeqByKey:
+            parsed.lastServerSeqByKey && typeof parsed.lastServerSeqByKey === 'object'
+              ? { ...parsed.lastServerSeqByKey }
+              : {},
+          lastSyncAt:
+            typeof parsed.lastSyncAt === 'number' && Number.isFinite(parsed.lastSyncAt)
+              ? parsed.lastSyncAt
+              : undefined,
+        };
+      }
+    } catch (error) {
+      console.warn('[sync] Could not read sync-state.json; starting fresh', error);
+    }
+    return { lastServerSeqByKey: {} };
   }
 
   private _read(): Record<string, number> {
     if (this._cache) {
       return { ...this._cache };
     }
-    let parsed: Partial<SyncStateFile> = {};
-    try {
-      if (existsSync(this._filePath)) {
-        parsed = JSON.parse(
-          readFileSync(this._filePath, 'utf8'),
-        ) as Partial<SyncStateFile>;
-      }
-    } catch (error) {
-      console.warn('[sync] Could not read sync-state.json; starting fresh', error);
+    const file = this._readFile();
+    this._cache = file.lastServerSeqByKey;
+    if (this._lastSyncAt === undefined) {
+      this._lastSyncAt = file.lastSyncAt ?? null;
     }
-    this._cache =
-      parsed.lastServerSeqByKey && typeof parsed.lastServerSeqByKey === 'object'
-        ? { ...parsed.lastServerSeqByKey }
-        : {};
     return { ...this._cache };
   }
 
-  private _write(all: Record<string, number>): void {
-    this._cache = { ...all };
-    const payload: SyncStateFile = { lastServerSeqByKey: all };
+  private _writeFile(payload: SyncStateFile): void {
+    this._cache = { ...payload.lastServerSeqByKey };
     mkdirSync(join(this._filePath, '..'), { recursive: true });
     const tmpPath = `${this._filePath}.${process.pid}.tmp`;
     const fd = openSync(tmpPath, 'w', 0o600);

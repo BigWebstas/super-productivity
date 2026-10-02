@@ -53,7 +53,12 @@ import {
 import { join } from 'node:path';
 import { startAgent, type StartedAgent } from '../main';
 import { loadSyncConfig, redactSyncConfig } from '../sync/sync-config';
-import type { RendererSettings, RendererSyncResult, SettingsSaveInput } from './preload';
+import type {
+  RendererSettings,
+  RendererStatus,
+  RendererSyncResult,
+  SettingsSaveInput,
+} from './preload';
 
 let tray: Tray | null = null;
 let statusWindow: BrowserWindow | null = null;
@@ -143,7 +148,9 @@ const STATUS_HTML = (
       <dt>Token</dt><dd>${escapeHtml(token)}</dd>
       <dt>Data</dt><dd>${escapeHtml(dataDir)}</dd>
     </dl>
-    ${syncSummary}
+    <div id="syncSummaryContainer">
+      ${syncSummary}
+    </div>
     <div class="actions">
       <button id="copy">Copy API URL and token</button>
       <button id="settings">Settings</button>
@@ -154,9 +161,21 @@ const STATUS_HTML = (
     <div id="syncFeedback" class="feedback"></div>
     <script>
       const text = ${JSON.stringify(`${restUrl}\n${token}`)};
-      document.getElementById('copy').addEventListener('click', () => {
-        navigator.clipboard.writeText(text);
-        document.getElementById('copy').textContent = 'Copied';
+      document.getElementById('copy').addEventListener('click', async () => {
+        try {
+          if (window.spBridge && window.spBridge.copyText) {
+            await window.spBridge.copyText(text);
+          } else {
+            await navigator.clipboard.writeText(text);
+          }
+          const copyBtn = document.getElementById('copy');
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => {
+            copyBtn.textContent = 'Copy API URL and token';
+          }, 2000);
+        } catch (err) {
+          console.error('Copy failed', err);
+        }
       });
       document.getElementById('settings').addEventListener('click', () => {
         if (window.spBridge) {
@@ -175,6 +194,32 @@ const STATUS_HTML = (
           el.className = 'feedback ' + (isError ? 'warn' : 'okmsg');
         }
       };
+      const updateStatusUI = async () => {
+        if (!window.spBridge || !window.spBridge.getStatus) return;
+        try {
+          const s = await window.spBridge.getStatus();
+          const container = document.getElementById('syncSummaryContainer');
+          if (!container) return;
+          if (!s.syncEnabled) {
+            container.innerHTML =
+              '<p class="warn">SuperSync is not configured. Open Settings to add a server URL and access token.</p>';
+            return;
+          }
+          const lastSync = s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleString() : 'never';
+          const tone = s.lastErrorCode ? 'warn' : 'okmsg';
+          const stateStr = s.lastErrorCode ? 'last error: ' + s.lastErrorCode : 'healthy';
+          container.innerHTML =
+            '<p class="' + tone + '">SuperSync enabled. Last sync: ' + lastSync +
+            '; pending upload: ' + s.pendingUpload + '; ' + stateStr +
+            '.<br/><small style="opacity:0.85">Entities: ' + s.projectCount + ' projects, ' +
+            s.taskCount + ' tasks, ' + s.tagCount + ' tags</small></p>';
+        } catch (e) {
+          console.error('Failed to update status', e);
+        }
+      };
+      updateStatusUI();
+      setInterval(updateStatusUI, 3000);
+
       document.getElementById('sync').addEventListener('click', async () => {
         if (!window.spBridge) return;
         setFeedback('Syncing...', false);
@@ -185,8 +230,10 @@ const STATUS_HTML = (
             'Sync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
             false,
           );
+          await updateStatusUI();
         } else {
           setFeedback('Sync failed: ' + res.error, true);
+          await updateStatusUI();
         }
       });
       document.getElementById('resync').addEventListener('click', async () => {
@@ -199,8 +246,10 @@ const STATUS_HTML = (
             'Resync complete (' + d.downloaded + ' downloaded, ' + d.applied + ' applied, ' + d.uploaded + ' uploaded)',
             false,
           );
+          await updateStatusUI();
         } else {
           setFeedback('Resync failed: ' + res.error, true);
+          await updateStatusUI();
         }
       });
     </script>
@@ -721,6 +770,43 @@ ipcMain.handle(
     }
   },
 );
+
+ipcMain.handle('sp-bridge:copy-text', (_event, text: string) => {
+  clipboard.writeText(text);
+  return true;
+});
+
+ipcMain.handle('sp-bridge:get-status', (): RendererStatus => {
+  const engine = agent?.sync;
+  const status = engine?.status();
+  const state = agent?.store.state as unknown as {
+    projects?: { ids?: string[]; entities?: Record<string, unknown> };
+    project?: { ids?: string[]; entities?: Record<string, unknown> };
+    tag?: { ids?: string[]; entities?: Record<string, unknown> };
+    tags?: { ids?: string[]; entities?: Record<string, unknown> };
+    tasks?: { ids?: string[]; entities?: Record<string, unknown> };
+    task?: { ids?: string[]; entities?: Record<string, unknown> };
+  };
+  const projectCount =
+    Object.keys(state?.projects?.entities || state?.project?.entities || {}).length ||
+    (state?.projects?.ids?.length ?? state?.project?.ids?.length ?? 0);
+  const tagCount =
+    Object.keys(state?.tag?.entities || state?.tags?.entities || {}).length ||
+    (state?.tag?.ids?.length ?? state?.tags?.ids?.length ?? 0);
+  const taskCount =
+    Object.keys(state?.tasks?.entities || state?.task?.entities || {}).length ||
+    (state?.tasks?.ids?.length ?? state?.task?.ids?.length ?? 0);
+
+  return {
+    lastSyncAt: status?.lastSyncAt ?? null,
+    lastErrorCode: status?.lastErrorCode ?? null,
+    pendingUpload: status?.pendingUpload ?? agent?.opLog.pendingUpload().length ?? 0,
+    syncEnabled: !!engine,
+    projectCount,
+    taskCount,
+    tagCount,
+  };
+});
 
 // Anything that escapes the try/catch below used to be invisible: no window, no
 // tray, no dialog, no log. The console is teed to bridge.log (imported first

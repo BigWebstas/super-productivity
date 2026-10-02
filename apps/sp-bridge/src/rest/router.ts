@@ -149,6 +149,77 @@ const toLocalDateStr = (timestamp: number): string => {
   return `${d.getFullYear()}-${month}-${day}`;
 };
 
+interface EntityCandidate {
+  id: string;
+  title: string;
+  name?: string;
+  isArchived?: boolean;
+  [key: string]: unknown;
+}
+
+const extractEntitiesFromState = (
+  rawState: unknown,
+  nestedWrapperKey?: string,
+): EntityCandidate[] => {
+  if (!rawState || typeof rawState !== 'object') {
+    return [];
+  }
+  let items: unknown[] = [];
+  if (Array.isArray(rawState)) {
+    items = rawState;
+  } else if (
+    'entities' in rawState &&
+    typeof (rawState as { entities?: unknown }).entities === 'object' &&
+    (rawState as { entities?: unknown }).entities !== null
+  ) {
+    items = Object.values((rawState as { entities: Record<string, unknown> }).entities);
+  } else {
+    items = Object.values(rawState);
+  }
+
+  const result: EntityCandidate[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    let candidate = item as Record<string, unknown>;
+    if (
+      nestedWrapperKey &&
+      candidate[nestedWrapperKey] &&
+      typeof candidate[nestedWrapperKey] === 'object' &&
+      !Array.isArray(candidate[nestedWrapperKey])
+    ) {
+      candidate = {
+        ...candidate,
+        ...(candidate[nestedWrapperKey] as Record<string, unknown>),
+      };
+    }
+    const id = candidate['id'];
+    if (typeof id !== 'string' || !id) continue;
+    const title =
+      typeof candidate['title'] === 'string'
+        ? candidate['title']
+        : typeof candidate['name'] === 'string'
+          ? candidate['name']
+          : '';
+    result.push({
+      ...candidate,
+      id,
+      title,
+    });
+  }
+  return result;
+};
+
+const getProjectById = (state: AgentState, id: string): EntityCandidate | undefined => {
+  const projects = extractEntitiesFromState(state[PROJECT_FEATURE_NAME], 'project');
+  const found = projects.find((p) => p.id === id);
+  if (found) return found;
+  const fallback = extractEntitiesFromState(
+    (state as unknown as Record<string, unknown>)['project'],
+    'project',
+  );
+  return fallback.find((p) => p.id === id);
+};
+
 /** Mirrors the app's `createNewTaskWithDefaults` for the agent's single context. */
 const createTaskWithDefaults = (title: string, additional: Partial<Task>): Task =>
   ({
@@ -383,13 +454,7 @@ export const createRouteHandler = ({
       typeof fields.projectId === 'string' && fields.projectId.trim()
         ? (fields.projectId as string)
         : INBOX_PROJECT.id;
-    const projects =
-      (
-        store.state[PROJECT_FEATURE_NAME] as unknown as {
-          entities?: Record<string, { isArchived?: boolean }>;
-        }
-      )?.entities || {};
-    const targetProject = projects[projectId];
+    const targetProject = getProjectById(store.state, projectId);
     if (!targetProject || targetProject.isArchived) {
       return error(404, 'PROJECT_NOT_FOUND', 'Destination project not found or archived');
     }
@@ -458,14 +523,8 @@ export const createRouteHandler = ({
           'projectId cannot be changed directly on a subtask — move its parent task instead',
         );
       }
-      const projects =
-        (
-          store.state[PROJECT_FEATURE_NAME] as unknown as {
-            entities?: Record<string, { isArchived?: boolean }>;
-          }
-        )?.entities || {};
-      const target_ = projects[target];
-      if (!target_ || target_.isArchived) {
+      const targetProject = getProjectById(store.state, target);
+      if (!targetProject || targetProject.isArchived) {
         return error(
           404,
           'PROJECT_NOT_FOUND',
@@ -895,15 +954,26 @@ export const createRouteHandler = ({
     if (method === 'GET' && path === '/projects') {
       const query = request.query.query;
       const needle = (Array.isArray(query) ? query[0] : query)?.toLowerCase();
-      let projects = Object.values(
-        (
-          store.state[PROJECT_FEATURE_NAME] as unknown as {
-            entities?: Record<string, { title?: string }>;
-          }
-        )?.entities || {},
-      ).filter((p): p is { title: string } => !!p && typeof p.title === 'string');
+      const byId = new Map<string, EntityCandidate>();
+      for (const p of extractEntitiesFromState(
+        store.state[PROJECT_FEATURE_NAME],
+        'project',
+      )) {
+        byId.set(p.id, p);
+      }
+      for (const p of extractEntitiesFromState(
+        (store.state as unknown as Record<string, unknown>)['project'],
+        'project',
+      )) {
+        if (!byId.has(p.id)) {
+          byId.set(p.id, p);
+        }
+      }
+      let projects = Array.from(byId.values()).filter((p) => !p.isArchived);
       if (needle) {
-        projects = projects.filter((p) => p.title.toLowerCase().includes(needle));
+        projects = projects.filter((p) =>
+          typeof p.title === 'string' ? p.title.toLowerCase().includes(needle) : false,
+        );
       }
       return ok(200, projects);
     }
@@ -911,15 +981,23 @@ export const createRouteHandler = ({
     if (method === 'GET' && path === '/tags') {
       const query = request.query.query;
       const needle = (Array.isArray(query) ? query[0] : query)?.toLowerCase();
-      let tags = Object.values(
-        (
-          store.state[TAG_FEATURE_NAME] as unknown as {
-            entities?: Record<string, { title?: string }>;
-          }
-        )?.entities || {},
-      ).filter((t): t is { title: string } => !!t && typeof t.title === 'string');
+      const byId = new Map<string, EntityCandidate>();
+      for (const t of extractEntitiesFromState(store.state[TAG_FEATURE_NAME], 'tag')) {
+        byId.set(t.id, t);
+      }
+      for (const t of extractEntitiesFromState(
+        (store.state as unknown as Record<string, unknown>)['tags'],
+        'tag',
+      )) {
+        if (!byId.has(t.id)) {
+          byId.set(t.id, t);
+        }
+      }
+      let tags = Array.from(byId.values());
       if (needle) {
-        tags = tags.filter((t) => t.title.toLowerCase().includes(needle));
+        tags = tags.filter((t) =>
+          typeof t.title === 'string' ? t.title.toLowerCase().includes(needle) : false,
+        );
       }
       return ok(200, tags);
     }
