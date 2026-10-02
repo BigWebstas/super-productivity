@@ -19,6 +19,10 @@ import { addProject } from '../../../../src/app/features/project/store/project.a
 import { addTag } from '../../../../src/app/features/tag/store/tag.actions';
 import { createTask } from '../../../../src/app/features/tasks/task.test-helper';
 import { encrypt } from '@sp/sync-core';
+import { readFileSync } from 'node:fs';
+import { DEFAULT_PROJECT } from '../../../../src/app/features/project/project.const';
+import { DEFAULT_TAG } from '../../../../src/app/features/tag/tag.const';
+import { hydrateFromOpLog } from '../oplog/hydrate';
 import { AuthFailSPError } from '@sp/sync-providers/errors';
 import { classifySyncError, nextRetryDelayMs } from './sync-errors';
 import { ActionType } from '../../../../src/app/op-log/core/action-types.enum';
@@ -771,61 +775,6 @@ describe('sync-errors', () => {
     });
   });
 
-  it('resyncs full-state SYNC_IMPORT operations reconstructing projects and tags', async () => {
-    return withDirs(async (dir) => {
-      const server = makeStubServer();
-      const { store, engine } = await setup(dir, server);
-
-      const syncImportOp: Operation = {
-        id: 'import-op-1',
-        actionType: ActionType.LOAD_ALL_DATA,
-        opType: OpType.SyncImport,
-        entityType: 'ALL',
-        payload: {
-          project: {
-            ids: ['p_imported'],
-            entities: {
-              p_imported: { id: 'p_imported', title: 'Imported Project' },
-            },
-          },
-          tag: {
-            ids: ['t_imported'],
-            entities: {
-              t_imported: { id: 't_imported', title: 'Imported Tag' },
-            },
-          },
-          task: {
-            ids: [],
-            entities: {},
-          },
-        },
-        clientId: REMOTE_ID,
-        vectorClock: { [REMOTE_ID]: 1 },
-        timestamp: 100,
-        schemaVersion: 1,
-      };
-
-      server.ops = [{ serverSeq: 1, op: syncImportOp, receivedAt: 100 }];
-
-      const res = await engine.resync('import-resync');
-      assert.equal(res.downloaded, 1);
-      assert.equal(res.applied, 1);
-
-      const projects = (
-        store.state[PROJECT_FEATURE_NAME] as unknown as {
-          entities: Record<string, { title: string }>;
-        }
-      ).entities;
-      const tags = (
-        store.state[TAG_FEATURE_NAME] as unknown as {
-          entities: Record<string, { title: string }>;
-        }
-      ).entities;
-      assert.equal(projects['p_imported']?.title, 'Imported Project');
-      assert.equal(tags['t_imported']?.title, 'Imported Tag');
-    });
-  });
-
   it('does not drop concurrent entity creations as superseded when local entity state is undefined', async () => {
     return withDirs(async (dir) => {
       const server = makeStubServer();
@@ -916,124 +865,6 @@ describe('sync-errors', () => {
     });
   });
 
-  it('resyncs full-state SYNC_IMPORT operations with plural keys (projects, tags, tasks)', async () => {
-    return withDirs(async (dir) => {
-      const server = makeStubServer();
-      const { store, engine } = await setup(dir, server);
-
-      const syncImportOp: Operation = {
-        id: 'import-op-plural',
-        actionType: ActionType.LOAD_ALL_DATA,
-        opType: OpType.SyncImport,
-        entityType: 'ALL',
-        payload: {
-          projects: {
-            ids: ['p_plural'],
-            entities: {
-              p_plural: { id: 'p_plural', title: 'Plural Project' },
-            },
-          },
-          tags: {
-            ids: ['t_plural'],
-            entities: {
-              t_plural: { id: 't_plural', title: 'Plural Tag' },
-            },
-          },
-          tasks: {
-            ids: [],
-            entities: {},
-          },
-        },
-        clientId: REMOTE_ID,
-        vectorClock: { [REMOTE_ID]: 1 },
-        timestamp: 100,
-        schemaVersion: 1,
-      };
-
-      server.ops = [{ serverSeq: 1, op: syncImportOp, receivedAt: 100 }];
-
-      const res = await engine.resync('plural-import-resync');
-      assert.equal(res.downloaded, 1);
-      assert.equal(res.applied, 1);
-
-      const projects = (
-        store.state[PROJECT_FEATURE_NAME] as unknown as {
-          entities: Record<string, { title: string }>;
-        }
-      ).entities;
-      const tags = (
-        store.state[TAG_FEATURE_NAME] as unknown as {
-          entities: Record<string, { title: string }>;
-        }
-      ).entities;
-      assert.equal(projects['p_plural']?.title, 'Plural Project');
-      assert.equal(tags['t_plural']?.title, 'Plural Tag');
-    });
-  });
-
-  it('resyncs with flat action payloads for addProject and addTag', async () => {
-    return withDirs(async (dir) => {
-      const server = makeStubServer();
-      const { store, engine } = await setup(dir, server);
-
-      const flatProjectOp: Operation = {
-        id: 'op-flat-proj',
-        actionType: ActionType.PROJECT_ADD,
-        opType: OpType.Create,
-        entityType: 'PROJECT',
-        entityId: 'p_flat',
-        payload: {
-          id: 'p_flat',
-          title: 'Flat Project',
-          taskIds: [],
-        },
-        clientId: REMOTE_ID,
-        vectorClock: { [REMOTE_ID]: 1 },
-        timestamp: 10,
-        schemaVersion: 1,
-      };
-
-      const flatTagOp: Operation = {
-        id: 'op-flat-tag',
-        actionType: ActionType.TAG_ADD,
-        opType: OpType.Create,
-        entityType: 'TAG',
-        entityId: 't_flat',
-        payload: {
-          id: 't_flat',
-          title: 'Flat Tag',
-          taskIds: [],
-        },
-        clientId: REMOTE_ID,
-        vectorClock: { [REMOTE_ID]: 2 },
-        timestamp: 20,
-        schemaVersion: 1,
-      };
-
-      server.ops = [
-        { serverSeq: 1, op: flatProjectOp, receivedAt: 10 },
-        { serverSeq: 2, op: flatTagOp, receivedAt: 20 },
-      ];
-
-      const res = await engine.resync('flat-payload-resync');
-      assert.equal(res.downloaded, 2);
-      assert.equal(res.applied, 2);
-
-      const projects = (
-        store.state[PROJECT_FEATURE_NAME] as unknown as {
-          entities: Record<string, { title: string }>;
-        }
-      ).entities;
-      const tags = (
-        store.state[TAG_FEATURE_NAME] as unknown as {
-          entities: Record<string, { title: string }>;
-        }
-      ).entities;
-      assert.equal(projects['p_flat']?.title, 'Flat Project');
-      assert.equal(tags['t_flat']?.title, 'Flat Tag');
-    });
-  });
-
   it('persists and restores lastSyncAt across engine restarts', async () => {
     return withDirs(async (dir) => {
       const server = makeStubServer();
@@ -1063,4 +894,100 @@ describe('sync-errors', () => {
       assert.equal(restartedEngine.lastSyncAt, syncedAt);
     });
   });
+});
+
+/**
+ * Real wire shapes only: a SYNC_IMPORT carrying a frozen real-app state (what
+ * every SuperSync download starts from once history is pruned) followed by
+ * ops built from the app's own action creators. Invented payload shapes are
+ * deliberately absent — the app never produces them, and accepting them in
+ * shared reducers would change every client's replay.
+ */
+describe('SyncEngine with real app data', () => {
+  const frozenState = (
+    JSON.parse(
+      readFileSync(
+        join(
+          __dirname,
+          '../../../../src/app/op-log/validation/test-fixtures/frozen-state-v18.15.json',
+        ),
+        'utf8',
+      ),
+    ) as { state: Record<string, unknown> }
+  ).state;
+
+  const seedServer = (server: StubServer): void => {
+    const ops: Operation[] = [
+      {
+        id: '01a0aaaa-0000-7000-8000-000000000001',
+        actionType: ActionType.LOAD_ALL_DATA,
+        opType: OpType.SyncImport,
+        entityType: 'ALL',
+        payload: frozenState,
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 1 },
+        timestamp: 100,
+        schemaVersion: 4,
+      } as Operation,
+      buildOperation({
+        action: addProject({
+          project: { ...DEFAULT_PROJECT, id: 'p_real', title: 'Real Project' },
+        }),
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 2 },
+        timestamp: 200,
+      }),
+      buildOperation({
+        action: addTag({ tag: { ...DEFAULT_TAG, id: 't_real', title: 'Real Tag' } }),
+        clientId: REMOTE_ID,
+        vectorClock: { [REMOTE_ID]: 3 },
+        timestamp: 300,
+      }),
+    ];
+    server.ops = ops.map((op, i) => ({
+      serverSeq: i + 1,
+      // Round-trip through JSON like the wire does.
+      op: JSON.parse(JSON.stringify(op)),
+      receivedAt: 100 + i,
+    }));
+  };
+
+  const assertProjectsAndTags = (store: AgentStore): void => {
+    const projectIds = (store.state[PROJECT_FEATURE_NAME] as unknown as { ids: string[] })
+      .ids;
+    const tagIds = (store.state[TAG_FEATURE_NAME] as unknown as { ids: string[] }).ids;
+    for (const id of ['proj-1', 'p_real']) {
+      assert.ok(projectIds.includes(id), `project ${id} missing: ${projectIds}`);
+    }
+    for (const id of ['tag-1', 't_real']) {
+      assert.ok(tagIds.includes(id), `tag ${id} missing: ${tagIds}`);
+    }
+  };
+
+  const assertSurvivesRestart = (dir: string): void => {
+    const opLog = OpLogStore.open(dir, {}, fixedId(LOCAL_ID));
+    const store = new AgentStore(opLog.clientId, undefined, opLog.vectorClock);
+    hydrateFromOpLog(store, opLog.all());
+    assertProjectsAndTags(store);
+  };
+
+  it('applies projects and tags from a real import and real ops, across restart', async () =>
+    withDirs(async (dir) => {
+      const server = makeStubServer();
+      seedServer(server);
+      const { store, engine } = await setup(dir, server);
+      await engine.syncNow('test');
+      assertProjectsAndTags(store);
+      assertSurvivesRestart(dir);
+    }));
+
+  it('resync rebuilds projects and tags from a real import and real ops, across restart', async () =>
+    withDirs(async (dir) => {
+      const server = makeStubServer();
+      seedServer(server);
+      const { store, engine } = await setup(dir, server);
+      await engine.resync('test');
+      assertProjectsAndTags(store);
+      assertSurvivesRestart(dir);
+    }));
 });

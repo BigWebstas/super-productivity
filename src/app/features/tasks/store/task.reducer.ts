@@ -93,49 +93,44 @@ const wouldCreateCircularReference = (
 //      It is a data-integrity issue, not a valid domain state; the type is correct.
 //   3. Normalizing once at load time is cheaper and more reliable than N guards.
 const normalizeTimeSpentOnDay = (state: TaskState): TaskState => {
-  const ids = Array.isArray(state?.ids) ? (state.ids as string[]) : [];
-  const entities = state?.entities || {};
   let hasUndefined = false;
-  for (const id of ids) {
-    if (entities[id] && !entities[id]!.timeSpentOnDay) {
+  for (const id of state.ids as string[]) {
+    if (state.entities[id] && !state.entities[id]!.timeSpentOnDay) {
       hasUndefined = true;
       break;
     }
   }
   if (!hasUndefined) return state;
-  const newEntities: TaskState['entities'] = {};
-  for (const id of ids) {
-    const task = entities[id];
-    newEntities[id] =
-      task && !task.timeSpentOnDay ? { ...task, timeSpentOnDay: {} } : task;
+  const entities: TaskState['entities'] = {};
+  for (const id of state.ids as string[]) {
+    const task = state.entities[id];
+    entities[id] = task && !task.timeSpentOnDay ? { ...task, timeSpentOnDay: {} } : task;
   }
-  return { ...state, entities: newEntities };
+  return { ...state, entities };
 };
 
 const normalizeSubTaskIds = (state: TaskState): TaskState => {
   const parentIdsWithDuplicates: string[] = [];
-  const ids = Array.isArray(state?.ids) ? (state.ids as string[]) : [];
-  const entities = state?.entities || {};
-  for (const id of ids) {
-    const task = entities[id];
+  for (const id of state.ids as string[]) {
+    const task = state.entities[id];
     if (task?.subTaskIds && new Set(task.subTaskIds).size !== task.subTaskIds.length) {
       parentIdsWithDuplicates.push(id);
     }
   }
   if (parentIdsWithDuplicates.length === 0) return state;
 
-  const newEntities: TaskState['entities'] = { ...entities };
+  const entities: TaskState['entities'] = { ...state.entities };
   for (const id of parentIdsWithDuplicates) {
-    const task = entities[id];
+    const task = state.entities[id];
     if (task) {
-      newEntities[id] = {
+      entities[id] = {
         ...task,
         subTaskIds: unique(task.subTaskIds),
       };
     }
   }
 
-  return { ...state, entities: newEntities };
+  return { ...state, entities };
 };
 
 const reorderSubTask = (
@@ -181,63 +176,6 @@ export const initialTaskState: TaskState = taskAdapter.getInitialState({
   dismissedCalendarAutoImportEventIdsByProvider: {},
 }) as TaskState;
 
-const _normalizeTaskState = (incoming: unknown): TaskState | undefined => {
-  if (!incoming) return undefined;
-  if (Array.isArray(incoming)) {
-    const valid = incoming
-      .map((item) =>
-        item &&
-        typeof item === 'object' &&
-        'task' in item &&
-        typeof (item as { task?: unknown }).task === 'object'
-          ? (item as { task: unknown }).task
-          : item,
-      )
-      .filter(
-        (t): t is Task =>
-          !!t && typeof t === 'object' && typeof (t as Task).id === 'string',
-      );
-    return taskAdapter.setAll(valid, initialTaskState);
-  }
-  if (typeof incoming === 'object') {
-    const inc = incoming as Record<string, unknown>;
-    if (inc.entities && typeof inc.entities === 'object') {
-      const rawEntities = inc.entities as Record<string, unknown>;
-      const entities: Record<string, Task> = {};
-      for (const [id, val] of Object.entries(rawEntities)) {
-        if (!val || typeof val !== 'object') continue;
-        const unwrapped =
-          'task' in val && val.task && typeof val.task === 'object'
-            ? (val.task as Task)
-            : (val as Task);
-        entities[id] = unwrapped;
-      }
-      const entityKeys = Object.keys(entities);
-      const ids = Array.isArray(inc.ids)
-        ? Array.from(new Set([...(inc.ids as string[]), ...entityKeys]))
-        : entityKeys;
-      return { ...inc, ids, entities } as TaskState;
-    }
-    const values = Object.values(inc)
-      .map((item) =>
-        item &&
-        typeof item === 'object' &&
-        'task' in item &&
-        typeof (item as { task?: unknown }).task === 'object'
-          ? (item as { task: unknown }).task
-          : item,
-      )
-      .filter(
-        (t): t is Task =>
-          !!t && typeof t === 'object' && typeof (t as Task).id === 'string',
-      );
-    if (values.length > 0) {
-      return taskAdapter.setAll(values, initialTaskState);
-    }
-  }
-  return undefined;
-};
-
 export const taskReducer = createReducer<TaskState>(
   initialTaskState,
 
@@ -247,19 +185,17 @@ export const taskReducer = createReducer<TaskState>(
   // META ACTIONS
   // ------------
   on(loadAllData, (state, { appDataComplete }) => {
-    const raw = appDataComplete.task ?? (appDataComplete as { tasks?: TaskState }).tasks;
-    const task = _normalizeTaskState(raw);
-    if (!task) return state;
+    if (!appDataComplete.task) return state;
+    const task = appDataComplete.task;
     // Sanitize: ensure ids only contains IDs that have entities
-    const ids = Array.isArray(task.ids) ? (task.ids as string[]) : [];
-    const entities = task.entities || {};
-    const hasOrphans = ids.some((id) => !entities[id]);
+    const ids = task.ids as string[];
+    const hasOrphans = ids.some((id) => !task.entities[id]);
     if (hasOrphans) {
       devError('loadAllData: Found orphaned task IDs in loaded state — sanitizing');
     }
     const sanitized = hasOrphans
-      ? { ...task, ids: ids.filter((id) => !!entities[id]), entities }
-      : { ...task, ids, entities };
+      ? { ...task, ids: ids.filter((id) => !!task.entities[id]) }
+      : task;
     return normalizeSubTaskIds(
       normalizeTimeSpentOnDay({
         ...sanitized,

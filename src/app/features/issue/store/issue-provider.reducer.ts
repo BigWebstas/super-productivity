@@ -24,9 +24,6 @@ export const issueProviderReducer = createReducer(
       return oldState;
     }
     const state = appDataComplete.issueProvider;
-    if (!Array.isArray(state?.ids) || !state?.entities) {
-      return oldState;
-    }
     // Migrate pre-plugin GITHUB providers to plugin shape
     const migratedEntities: Record<string, IssueProvider> = {};
     let needsMigration = false;

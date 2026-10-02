@@ -593,18 +593,6 @@ export const lwwUpdateMetaReducer: MetaReducer = (
       }
     }
 
-    const payloadKey = config.payloadKey;
-    if (
-      payloadKey &&
-      typeof entityData[payloadKey] === 'object' &&
-      entityData[payloadKey] !== null &&
-      !Array.isArray(entityData[payloadKey])
-    ) {
-      const nested = entityData[payloadKey] as Record<string, unknown>;
-      entityData = { ...nested, ...entityData };
-      delete entityData[payloadKey];
-    }
-
     // Filter orphaned taskIds/backlogTaskIds for TAG and PROJECT entities
     entityData = filterOrphanedTaskIdsFromEntityData(
       entityData,

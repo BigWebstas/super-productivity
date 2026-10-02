@@ -149,83 +149,15 @@ const toLocalDateStr = (timestamp: number): string => {
   return `${d.getFullYear()}-${month}-${day}`;
 };
 
-interface EntityCandidate {
-  id: string;
-  title: string;
-  name?: string;
-  isArchived?: boolean;
-  [key: string]: unknown;
-}
-
-const extractEntitiesFromState = (
-  rawState: unknown,
-  nestedWrapperKey?: string,
-): EntityCandidate[] => {
-  if (!rawState || typeof rawState !== 'object') {
-    return [];
-  }
-  let items: unknown[] = [];
-  if (Array.isArray(rawState)) {
-    items = rawState;
-  } else if (
-    'entities' in rawState &&
-    typeof (rawState as { entities?: unknown }).entities === 'object' &&
-    (rawState as { entities?: unknown }).entities !== null
-  ) {
-    items = Object.values((rawState as { entities: Record<string, unknown> }).entities);
-  } else {
-    items = Object.values(rawState);
-  }
-
-  const result: EntityCandidate[] = [];
-  for (const item of items) {
-    if (!item || typeof item !== 'object') continue;
-    let candidate = item as Record<string, unknown>;
-    if (
-      nestedWrapperKey &&
-      candidate[nestedWrapperKey] &&
-      typeof candidate[nestedWrapperKey] === 'object' &&
-      !Array.isArray(candidate[nestedWrapperKey])
-    ) {
-      candidate = {
-        ...candidate,
-        ...(candidate[nestedWrapperKey] as Record<string, unknown>),
-      };
+const getProjectById = (
+  state: AgentState,
+  id: string,
+): { isArchived?: boolean } | undefined =>
+  (
+    state[PROJECT_FEATURE_NAME] as unknown as {
+      entities: Record<string, { isArchived?: boolean }>;
     }
-    const id = candidate['id'];
-    if (typeof id !== 'string' || !id) continue;
-    const title =
-      typeof candidate['title'] === 'string'
-        ? candidate['title']
-        : typeof candidate['name'] === 'string'
-          ? candidate['name']
-          : '';
-    result.push({
-      ...candidate,
-      id,
-      title,
-    });
-  }
-  return result;
-};
-
-const getProjectById = (state: AgentState, id: string): EntityCandidate | undefined => {
-  const projects = extractEntitiesFromState(state[PROJECT_FEATURE_NAME], 'project');
-  const found = projects.find((p) => p.id === id);
-  if (found) return found;
-  const fallback = extractEntitiesFromState(
-    (state as unknown as Record<string, unknown>)['project'],
-    'project',
-  );
-  const foundFallback = fallback.find((p) => p.id === id);
-  if (foundFallback) return foundFallback;
-  const tasks = Object.values(taskEntities(state) || {});
-  const matchingTask = tasks.find((t) => t.projectId === id);
-  if (matchingTask) {
-    return { id, title: id };
-  }
-  return undefined;
-};
+  ).entities[id];
 
 /** Mirrors the app's `createNewTaskWithDefaults` for the agent's single context. */
 const createTaskWithDefaults = (title: string, additional: Partial<Task>): Task =>
@@ -961,37 +893,15 @@ export const createRouteHandler = ({
     if (method === 'GET' && path === '/projects') {
       const query = request.query.query;
       const needle = (Array.isArray(query) ? query[0] : query)?.toLowerCase();
-      const byId = new Map<string, EntityCandidate>();
-      for (const p of extractEntitiesFromState(
-        store.state[PROJECT_FEATURE_NAME],
-        'project',
-      )) {
-        byId.set(p.id, p);
-      }
-      for (const p of extractEntitiesFromState(
-        (store.state as unknown as Record<string, unknown>)['project'],
-        'project',
-      )) {
-        if (!byId.has(p.id)) {
-          byId.set(p.id, p);
-        }
-      }
-      const tasks = Object.values(taskEntities(store.state) || {});
-      for (const t of tasks) {
-        if (
-          t.projectId &&
-          t.projectId !== INBOX_PROJECT.id &&
-          t.projectId !== 'INBOX' &&
-          !byId.has(t.projectId)
-        ) {
-          byId.set(t.projectId, { id: t.projectId, title: t.projectId });
-        }
-      }
-      let projects = Array.from(byId.values()).filter((p) => !p.isArchived);
+      let projects = Object.values(
+        (
+          store.state[PROJECT_FEATURE_NAME] as unknown as {
+            entities: Record<string, { title: string }>;
+          }
+        ).entities,
+      );
       if (needle) {
-        projects = projects.filter((p) =>
-          typeof p.title === 'string' ? p.title.toLowerCase().includes(needle) : false,
-        );
+        projects = projects.filter((p) => p.title.toLowerCase().includes(needle));
       }
       return ok(200, projects);
     }
@@ -999,33 +909,15 @@ export const createRouteHandler = ({
     if (method === 'GET' && path === '/tags') {
       const query = request.query.query;
       const needle = (Array.isArray(query) ? query[0] : query)?.toLowerCase();
-      const byId = new Map<string, EntityCandidate>();
-      for (const t of extractEntitiesFromState(store.state[TAG_FEATURE_NAME], 'tag')) {
-        byId.set(t.id, t);
-      }
-      for (const t of extractEntitiesFromState(
-        (store.state as unknown as Record<string, unknown>)['tags'],
-        'tag',
-      )) {
-        if (!byId.has(t.id)) {
-          byId.set(t.id, t);
-        }
-      }
-      const tasks = Object.values(taskEntities(store.state) || {});
-      for (const t of tasks) {
-        if (Array.isArray(t.tagIds)) {
-          for (const tid of t.tagIds) {
-            if (tid && tid !== TODAY_TAG.id && tid !== 'TODAY' && !byId.has(tid)) {
-              byId.set(tid, { id: tid, title: tid });
-            }
+      let tags = Object.values(
+        (
+          store.state[TAG_FEATURE_NAME] as unknown as {
+            entities: Record<string, { title: string }>;
           }
-        }
-      }
-      let tags = Array.from(byId.values());
+        ).entities,
+      );
       if (needle) {
-        tags = tags.filter((t) =>
-          typeof t.title === 'string' ? t.title.toLowerCase().includes(needle) : false,
-        );
+        tags = tags.filter((t) => t.title.toLowerCase().includes(needle));
       }
       return ok(200, tags);
     }

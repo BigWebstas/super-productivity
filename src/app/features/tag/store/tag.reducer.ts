@@ -11,10 +11,10 @@
  * This pattern keeps move operations (drag/drop, Ctrl+↑/↓) simple.
  * See: ARCHITECTURE-DECISIONS.md Decision #2
  */
-import { createEntityAdapter, EntityAdapter, Update } from '@ngrx/entity';
+import { createEntityAdapter, EntityAdapter } from '@ngrx/entity';
 import { Tag, TagState } from '../tag.model';
 import { createFeatureSelector, createReducer, createSelector, on } from '@ngrx/store';
-import { DEFAULT_TAG, TODAY_TAG } from '../tag.const';
+import { TODAY_TAG } from '../tag.const';
 import { WorkContextType } from '../../work-context/work-context.model';
 import {
   moveTaskDownInTodayList,
@@ -188,14 +188,12 @@ export const selectTagsByIds = createSelector(
 
 // TODO also add no list tag
 const _addMyDayTagIfNecessary = (state: TagState): TagState => {
-  const ids = Array.isArray(state?.ids) ? (state.ids as string[]) : [];
-  const entities = state?.entities || {};
-  if (!ids.includes(TODAY_TAG.id)) {
-    return {
+  if (state.ids && !(state.ids as string[]).includes(TODAY_TAG.id)) {
+    state = {
       ...state,
-      ids: [TODAY_TAG.id, ...ids],
+      ids: [TODAY_TAG.id, ...state.ids] as string[],
       entities: {
-        ...entities,
+        ...state.entities,
         [TODAY_TAG.id]: TODAY_TAG,
       },
     };
@@ -210,73 +208,14 @@ export const initialTagState: TagState = _addMyDayTagIfNecessary(
   }),
 );
 
-const _normalizeTagState = (incoming: unknown): TagState | undefined => {
-  if (!incoming) return undefined;
-  if (Array.isArray(incoming)) {
-    const valid = incoming
-      .map((item) =>
-        item &&
-        typeof item === 'object' &&
-        'tag' in item &&
-        typeof (item as { tag?: unknown }).tag === 'object'
-          ? (item as { tag: unknown }).tag
-          : item,
-      )
-      .filter(
-        (t): t is Tag =>
-          !!t && typeof t === 'object' && typeof (t as Tag).id === 'string',
-      );
-    return tagAdapter.setAll(valid, initialTagState);
-  }
-  if (typeof incoming === 'object') {
-    const inc = incoming as Record<string, unknown>;
-    if (inc.entities && typeof inc.entities === 'object') {
-      const rawEntities = inc.entities as Record<string, unknown>;
-      const entities: Record<string, Tag> = {};
-      for (const [id, val] of Object.entries(rawEntities)) {
-        if (!val || typeof val !== 'object') continue;
-        const unwrapped =
-          'tag' in val && val.tag && typeof val.tag === 'object'
-            ? (val.tag as Tag)
-            : (val as Tag);
-        entities[id] = unwrapped;
-      }
-      const entityKeys = Object.keys(entities);
-      const ids = Array.isArray(inc.ids)
-        ? Array.from(new Set([...(inc.ids as string[]), ...entityKeys]))
-        : entityKeys;
-      return { ...inc, ids, entities } as TagState;
-    }
-    const values = Object.values(inc)
-      .map((item) =>
-        item &&
-        typeof item === 'object' &&
-        'tag' in item &&
-        typeof (item as { tag?: unknown }).tag === 'object'
-          ? (item as { tag: unknown }).tag
-          : item,
-      )
-      .filter(
-        (t): t is Tag =>
-          !!t && typeof t === 'object' && typeof (t as Tag).id === 'string',
-      );
-    if (values.length > 0) {
-      return tagAdapter.setAll(values, initialTagState);
-    }
-  }
-  return undefined;
-};
-
 export const tagReducer = createReducer<TagState>(
   initialTagState,
 
   // META ACTIONS
   // ------------
-  on(loadAllData, (oldState, { appDataComplete }) => {
-    const raw = appDataComplete.tag ?? (appDataComplete as { tags?: TagState }).tags;
-    const incoming = _normalizeTagState(raw);
-    return _addMyDayTagIfNecessary(incoming ? incoming : oldState);
-  }),
+  on(loadAllData, (oldState, { appDataComplete }) =>
+    _addMyDayTagIfNecessary(appDataComplete.tag ? { ...appDataComplete.tag } : oldState),
+  ),
 
   // NOTE: transferTask is now handled in planner-shared.reducer.ts
   // NOTE: planTaskForDay is handled in planner-shared.reducer.ts (meta-reducer with offset-aware todayStr)
@@ -410,61 +349,9 @@ export const tagReducer = createReducer<TagState>(
 
   // INTERNAL
   // --------
-  on(addTag, (state: TagState, action) => {
-    const raw =
-      action.tag ??
-      (action as { actionPayload?: { tag?: Tag } }).actionPayload?.tag ??
-      ('id' in action && typeof (action as { id?: unknown }).id === 'string'
-        ? (action as unknown as Tag)
-        : undefined);
-    const tag =
-      raw &&
-      typeof raw === 'object' &&
-      'tag' in raw &&
-      typeof (raw as { tag?: unknown }).tag === 'object'
-        ? (raw as { tag: Tag }).tag
-        : raw;
-    if (!tag) return state;
-    if (state.entities[tag.id]) {
-      return tagAdapter.updateOne({ id: tag.id, changes: tag }, state);
-    }
-    return tagAdapter.addOne(tag, state);
-  }),
+  on(addTag, (state: TagState, { tag }) => tagAdapter.addOne(tag, state)),
 
-  on(updateTag, (state: TagState, action) => {
-    let tag =
-      action.tag ??
-      (action as { actionPayload?: { tag?: Update<Tag> } }).actionPayload?.tag;
-    if (
-      tag &&
-      typeof tag === 'object' &&
-      'tag' in tag &&
-      typeof (tag as { tag?: unknown }).tag === 'object'
-    ) {
-      tag = (tag as { tag: Update<Tag> }).tag;
-    }
-    if (!tag) {
-      if ('id' in action && 'changes' in action) {
-        tag = action as unknown as Update<Tag>;
-      } else if ('id' in action && typeof (action as { id?: unknown }).id === 'string') {
-        const { id, ...changes } = action as unknown as {
-          id: string;
-          [key: string]: unknown;
-        };
-        tag = { id, changes: changes as Partial<Tag> };
-      }
-    }
-    if (!tag) return state;
-    if (!state.entities[tag.id]) {
-      const fullTag: Tag = {
-        ...DEFAULT_TAG,
-        ...tag.changes,
-        id: tag.id as string,
-      };
-      return tagAdapter.addOne(fullTag, state);
-    }
-    return tagAdapter.updateOne(tag, state);
-  }),
+  on(updateTag, (state: TagState, { tag }) => tagAdapter.updateOne(tag, state)),
 
   on(deleteTag, (state: TagState, { id }) => tagAdapter.removeOne(id, state)),
 

@@ -85,17 +85,14 @@ export const initialSimpleCounterState: SimpleCounterState =
 const disableIsOnForAll = (state: SimpleCounterState): SimpleCounterState => {
   return {
     ...state,
-    entities: updateAllInDictionary<SimpleCounter>(state?.entities || {}, {
-      isOn: false,
-    }),
+    entities: updateAllInDictionary<SimpleCounter>(state.entities, { isOn: false }),
   };
 };
 
 const normalizeCountOnDay = (state: SimpleCounterState): SimpleCounterState => {
   const entities: SimpleCounterState['entities'] = {};
-  const currentEntities = state?.entities || {};
-  for (const id of Object.keys(currentEntities)) {
-    const entity = currentEntities[id];
+  for (const id of Object.keys(state.entities)) {
+    const entity = state.entities[id];
     if (entity) {
       entities[id] = entity.countOnDay ? entity : { ...entity, countOnDay: {} };
     }
