@@ -451,15 +451,31 @@ ipcMain.handle('sp-bridge:get-status', (): RendererStatus => {
     tasks?: { ids?: string[]; entities?: Record<string, unknown> };
     task?: { ids?: string[]; entities?: Record<string, unknown> };
   };
-  const projectCount =
-    Object.keys(state?.projects?.entities || state?.project?.entities || {}).length ||
-    (state?.projects?.ids?.length ?? state?.project?.ids?.length ?? 0);
-  const tagCount =
-    Object.keys(state?.tag?.entities || state?.tags?.entities || {}).length ||
-    (state?.tag?.ids?.length ?? state?.tags?.ids?.length ?? 0);
-  const taskCount =
-    Object.keys(state?.tasks?.entities || state?.task?.entities || {}).length ||
-    (state?.tasks?.ids?.length ?? state?.task?.ids?.length ?? 0);
+  const taskMap = (state?.tasks?.entities || state?.task?.entities || {}) as Record<
+    string,
+    { projectId?: string | null; tagIds?: string[] }
+  >;
+  const projSet = new Set(
+    Object.keys(state?.projects?.entities || state?.project?.entities || {}),
+  );
+  const tagSet = new Set(
+    Object.keys(state?.tag?.entities || state?.tags?.entities || {}),
+  );
+  for (const t of Object.values(taskMap)) {
+    if (t.projectId && t.projectId !== 'INBOX' && t.projectId !== 'INBOX_PROJECT') {
+      projSet.add(t.projectId);
+    }
+    if (Array.isArray(t.tagIds)) {
+      for (const tid of t.tagIds) {
+        if (tid && tid !== 'TODAY') {
+          tagSet.add(tid);
+        }
+      }
+    }
+  }
+  const projectCount = projSet.size;
+  const tagCount = tagSet.size;
+  const taskCount = Object.keys(taskMap).length;
 
   return {
     lastSyncAt: status?.lastSyncAt ?? null,

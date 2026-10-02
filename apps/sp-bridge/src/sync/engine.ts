@@ -563,11 +563,23 @@ export class SyncEngine {
     )
       .map((t) => (t as { title?: string })?.title)
       .filter(Boolean);
+    const taskList = Object.values(
+      state?.tasks?.entities || state?.task?.entities || {},
+    ) as Array<{
+      id: string;
+      title: string;
+      projectId?: string | null;
+      tagIds?: string[];
+    }>;
+    const taskProjIds = [...new Set(taskList.map((t) => t.projectId).filter(Boolean))];
+    const taskTagIds = [...new Set(taskList.flatMap((t) => t.tagIds || []).filter(Boolean))];
     console.log(
       `[sync] Resync replay complete. Store entity counts: ` +
         `projects=${projCount} (${projTitles.join(', ')}), ` +
         `tags=${tagCount} (${tagTitles.join(', ')}), ` +
-        `tasks=${taskCount}`,
+        `tasks=${taskCount}` +
+        (taskProjIds.length ? ` (tasks reference projects: ${taskProjIds.join(', ')})` : '') +
+        (taskTagIds.length ? ` (tasks reference tags: ${taskTagIds.join(', ')})` : ''),
     );
 
     // 6. Fold all contributing vector clocks into store
