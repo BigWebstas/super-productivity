@@ -7,6 +7,7 @@
 import { runAll } from './harness';
 
 import '../store/agent-store.spec';
+import '../store/logical-day.spec';
 import '../oplog/operation-factory.spec';
 import '../oplog/op-log-store.spec';
 import '../rest/rest-api.spec';

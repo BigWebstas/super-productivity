@@ -36,6 +36,8 @@ import { INBOX_PROJECT } from '../../../../src/app/features/project/project.cons
 import { DEFAULT_TASK } from '../../../../src/app/features/tasks/task.model';
 import { isValidDBDateStr } from '../../../../src/app/util/get-db-date-str';
 import { TODAY_TAG } from '../../../../src/app/features/tag/tag.const';
+import { isTodayWithOffset } from '../../../../src/app/util/is-today.util';
+import { syncLogicalDay } from '../store/logical-day';
 import type { Task } from '../../../../src/app/features/tasks/task.model';
 import {
   cancelFocusSession,
@@ -139,14 +141,6 @@ const withSubTasks = (state: AgentState, task: Task): Task & { subTasks?: Task[]
     .map((id) => getTaskById(state, id))
     .filter((t): t is Task => !!t);
   return subTasks.length ? { ...task, subTasks } : task;
-};
-
-/** Local YYYY-MM-DD for a timestamp, matching the app's logical-today basis. */
-const toLocalDateStr = (timestamp: number): string => {
-  const d = new Date(timestamp);
-  const month = `${d.getMonth() + 1}`.padStart(2, '0');
-  const day = `${d.getDate()}`.padStart(2, '0');
-  return `${d.getFullYear()}-${month}-${day}`;
 };
 
 const getProjectById = (
@@ -281,7 +275,7 @@ export const createRouteHandler = ({
     if (projectId) {
       filtered = filtered.filter((t) => t.projectId === projectId);
     }
-    const todayLocalStr = toLocalDateStr(Date.now());
+    const { todayStr, startOfNextDayDiffMs } = syncLogicalDay(store);
     const tagId = getParam('tagId');
     if (tagId) {
       filtered =
@@ -292,12 +286,12 @@ export const createRouteHandler = ({
             // logical today — a UTC date would shift the set by a day for
             // half the planet.
             filtered.filter((t) => {
-              if (t.dueDay === todayLocalStr) {
+              if (t.dueDay === todayStr) {
                 return true;
               }
               return (
                 typeof t.dueWithTime === 'number' &&
-                toLocalDateStr(t.dueWithTime) === todayLocalStr
+                isTodayWithOffset(t.dueWithTime, todayStr, startOfNextDayDiffMs)
               );
             })
           : filtered.filter((t) => (t.tagIds ?? []).includes(tagId));
@@ -397,7 +391,15 @@ export const createRouteHandler = ({
     if (!targetProject || targetProject.isArchived) {
       return error(404, 'PROJECT_NOT_FOUND', 'Destination project not found or archived');
     }
+    // Refreshed before addTask: its reducer orders a dueDay=today task into
+    // Today using appState.todayStr, so a stale date would misfile it.
+    const { todayStr } = syncLogicalDay(store);
+    // New tasks land in Today unless the caller schedules them itself; an
+    // explicit `dueDay: null` keeps a task unscheduled.
+    const scheduling =
+      'dueDay' in body || 'dueWithTime' in body ? {} : { dueDay: todayStr };
     const task = createTaskWithDefaults(title, {
+      ...scheduling,
       ...fields,
       projectId,
     } as Partial<Task>);

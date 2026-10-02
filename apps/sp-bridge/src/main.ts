@@ -19,6 +19,7 @@ import { generateClientId } from '../../../src/app/core/util/generate-client-id'
 import { AgentStore } from './store/agent-store';
 import { OpLogStore } from './oplog/op-log-store';
 import { hydrateFromOpLog } from './oplog/hydrate';
+import { syncLogicalDay } from './store/logical-day';
 import { createRouteHandler } from './rest/router';
 import { LocalRestApiServer, LOCAL_REST_API_PORT } from './rest/server';
 import { FileTaskArchive } from './archive/archive-store';
@@ -114,6 +115,12 @@ export const startAgent = async (
   });
 
   const hydrated = hydrateFromOpLog(store, opLog.all());
+  // The app keeps its logical day current with effects; the bridge has none,
+  // so refresh it here and once a minute (see store/logical-day.ts). Hydration
+  // first, so a synced "start of next day" setting is already in the store.
+  syncLogicalDay(store);
+  const logicalDayTimer = setInterval(() => syncLogicalDay(store), 60_000);
+  logicalDayTimer.unref();
   // Persist remote clocks observed in the log, not just the store's copy:
   // without this a future compaction/truncation would lose causality and the
   // next local op would look concurrent with history already applied.
@@ -254,6 +261,7 @@ export const startAgent = async (
     triggerSync,
     resync,
     stop: async () => {
+      clearInterval(logicalDayTimer);
       sync?.stop();
       focusTicker.stop();
       await server.close();

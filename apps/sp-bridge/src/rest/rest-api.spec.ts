@@ -14,6 +14,9 @@ import { INBOX_PROJECT } from '../../../../src/app/features/project/project.cons
 import { addProject } from '../../../../src/app/features/project/store/project.actions';
 import { addTag } from '../../../../src/app/features/tag/store/tag.actions';
 import { TASK_FEATURE_NAME } from '../../../../src/app/features/tasks/store/task.reducer';
+import { TAG_FEATURE_NAME } from '../../../../src/app/features/tag/store/tag.reducer';
+import { TODAY_TAG } from '../../../../src/app/features/tag/tag.const';
+import { syncLogicalDay } from '../store/logical-day';
 
 /** Port 0 lets the OS pick a free port, so tests never collide. */
 const withServer = async (
@@ -257,6 +260,36 @@ describe('LocalRestApiServer routes', () => {
       assert.equal(res.body.data.title, 'Buy milk');
       assert.equal(res.body.data.projectId, INBOX_PROJECT.id);
       assert.ok(taskById(store, res.body.data.id), 'task is in the store');
+    });
+  });
+
+  it('puts a new task in Today unless the caller schedules it', async () => {
+    await withServer(async ({ request, store }) => {
+      const { todayStr } = syncLogicalDay(store);
+      const res = await request('POST', '/tasks', { body: { title: 'Today task' } });
+      assert.equal(res.status, 201);
+      assert.equal(res.body.data.dueDay, todayStr);
+      // TODAY is virtual: never a tagId, only the ordering list and the date.
+      assert.equal((res.body.data.tagIds as string[]).includes(TODAY_TAG.id), false);
+      const todayOrder = (
+        store.state[TAG_FEATURE_NAME] as unknown as {
+          entities: Record<string, { taskIds: string[] }>;
+        }
+      ).entities[TODAY_TAG.id].taskIds;
+      assert.ok(todayOrder.includes(res.body.data.id), 'task is ordered into Today');
+      const listed = await request('GET', `/tasks?tagId=${TODAY_TAG.id}`);
+      assert.ok(
+        (listed.body.data as { id: string }[]).some((t) => t.id === res.body.data.id),
+      );
+
+      const unscheduled = await request('POST', '/tasks', {
+        body: { title: 'Someday', dueDay: null },
+      });
+      assert.equal(unscheduled.body.data.dueDay ?? null, null);
+      const later = await request('POST', '/tasks', {
+        body: { title: 'Later', dueDay: '2099-01-01' },
+      });
+      assert.equal(later.body.data.dueDay, '2099-01-01');
     });
   });
 
