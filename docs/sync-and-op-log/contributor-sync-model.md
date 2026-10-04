@@ -22,6 +22,10 @@ operations that conflict with sync.
 
 Everything below is that invariant applied at three points.
 
+**Sections:** [Boundary 1 — The action boundary](#boundary-1--the-action-boundary) · [Boundary 2 — The selector boundary](#boundary-2--the-selector-boundary) · [The atomicity rule — one replay-atomic transition, one op](#the-atomicity-rule--one-replay-atomic-transition-one-op) · [Conflict resolution — stay on generic paths](#conflict-resolution--stay-on-generic-paths) · [Fix intake — evidence before a fix](#fix-intake--evidence-before-a-fix) · Clearing a field — `undefined` does not survive the wire (#9776) · [Decision table — "I'm writing an effect"](#decision-table--im-writing-an-effect) · [The sync-epoch fence (#9074)](#the-sync-epoch-fence-9074) · [Why (deeper)](#why-deeper)
+
+Line numbers: `rg -n '^#{1,3} ' <this file>`, then read one section with `sed -n`.
+
 ---
 
 ## Boundary 1 — The action boundary

@@ -5,6 +5,10 @@ implemented (see [Implementation](#implementation-pr-1)); "How it works today"
 below describes the code before it. Tracker: #10393, queue item 1. Findings:
 #10382.
 
+**Sections:** [Problem](#problem) · [How it works today](#how-it-works-today) · [Options](#options) · [Released clients and graceful degradation](#released-clients-and-graceful-degradation) · [Fuzz pins and E2E proof](#fuzz-pins-and-e2e-proof) · [Recommendation](#recommendation) · [Decisions for @johannesjo](#decisions-for-johannesjo) · [Outcome](#outcome) · [Implementation (PR 1)](#implementation-pr-1) · [Per-field winners (#10422)](#per-field-winners-10422)
+
+Line numbers: `rg -n '^#{1,3} ' <this file>`, then read one section with `sed -n`.
+
 ## Problem
 
 After a conflict, the resolving device uploads a replace-mode `[X] LWW Update`
