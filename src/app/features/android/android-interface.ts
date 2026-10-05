@@ -120,7 +120,8 @@ export interface AndroidInterface {
   getWidgetDoneQueue?(): string | null;
 
   // Widget tracking-stop queue - get the pending stop-tracking tap from the
-  // live-tracking widget (the task id the tap intended to stop) and clear it
+  // live-tracking widget as a JSON object string `{taskId, elapsedMs}` (native
+  // counter frozen at the tap, null if native wasn't tracking it) and clear it
   getWidgetTrackingStopQueue?(): string | null;
 
   // Re-render the home screen widget from the current widget_data snapshot

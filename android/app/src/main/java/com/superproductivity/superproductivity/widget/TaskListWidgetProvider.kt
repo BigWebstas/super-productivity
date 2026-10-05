@@ -133,7 +133,9 @@ class TaskListWidgetProvider : AppWidgetProvider() {
                     )
                 } ?: context.getString(R.string.widget_header_outdated_unknown)
             }
-            return header to WidgetData.parseCurrentTask(json)
+            return header to WidgetTrackingStopQueue.withoutPendingStop(
+                context, WidgetData.parseCurrentTask(json)
+            )
         }
 
         /**
@@ -186,9 +188,14 @@ class TaskListWidgetProvider : AppWidgetProvider() {
             currentTask: WidgetCurrentTask?
         ) {
             val views = RemoteViews(context.packageName, R.layout.widget_task_list)
-            WidgetBackground.apply(
-                views, R.id.widget_task_list_root, WidgetBackground.getColor(context, appWidgetId)
-            )
+            val style = WidgetBackground.styleFor(context, appWidgetId)
+            style.applyBackground(views, R.id.widget_task_list_root)
+            style.icon(views, R.id.widget_header_icon, WidgetInk.BRAND)
+            style.text(views, R.id.widget_header_title, WidgetInk.INK)
+            style.text(views, R.id.widget_tracking_title, WidgetInk.INK)
+            style.text(views, R.id.widget_tracking_device, WidgetInk.MUTED)
+            style.fill(views, R.id.widget_separator, WidgetInk.SEPARATOR)
+            style.text(views, R.id.widget_empty, WidgetInk.MUTED)
 
             views.setTextViewText(R.id.widget_header_title, header)
 

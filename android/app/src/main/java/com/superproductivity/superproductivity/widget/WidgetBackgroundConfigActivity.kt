@@ -10,15 +10,17 @@ import android.view.View
 import android.widget.GridLayout
 import android.widget.SeekBar
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.setMargins
 import com.superproductivity.superproductivity.R
 
 /**
  * android.appwidget.action.APPWIDGET_CONFIGURE target for both widget
  * providers (appWidgetId is unique across types, so one screen + one prefs
- * store in [WidgetBackground] covers both). Shown on first add, and again
- * from the launcher's long-press "Edit" once android:configure is set on
- * the provider's appwidget-info.
+ * store in [WidgetBackground] covers both). Optional: widgets are placed with
+ * the theme default (configuration_optional, API 31+) and customized later
+ * from the launcher's long-press "Edit". Launchers below API 31 still show it
+ * on add, so backing out keeps the widget instead of cancelling placement.
  */
 class WidgetBackgroundConfigActivity : AppCompatActivity() {
 
@@ -38,19 +40,25 @@ class WidgetBackgroundConfigActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Widget config contract: cancel unless the user explicitly saves below.
-        setResult(Activity.RESULT_CANCELED)
         setContentView(R.layout.activity_widget_background_config)
 
         appWidgetId = intent.extras?.getInt(
             AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID
         ) ?: AppWidgetManager.INVALID_APPWIDGET_ID
         if (appWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) {
+            setResult(Activity.RESULT_CANCELED)
             finish()
             return
         }
+        // Appearance is optional: leaving without saving keeps the widget as is
+        // (on first add: the theme default) rather than cancelling placement.
+        setResult(
+            Activity.RESULT_OK,
+            Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+        )
 
-        selectedColor = WidgetBackground.getColor(this, appWidgetId)
+        selectedColor = WidgetBackground.getCustomColor(this, appWidgetId)
+            ?: ContextCompat.getColor(this, R.color.widget_bg)
         val preview = findViewById<View>(R.id.widget_config_preview)
         val alphaSeekBar = findViewById<SeekBar>(R.id.widget_config_alpha)
         alphaSeekBar.progress = Color.alpha(selectedColor) * 100 / 255
@@ -71,10 +79,12 @@ class WidgetBackgroundConfigActivity : AppCompatActivity() {
         findViewById<View>(R.id.widget_config_save).setOnClickListener {
             WidgetBackground.setColor(this, appWidgetId, selectedColor)
             refreshOwningWidget()
-            setResult(
-                Activity.RESULT_OK,
-                Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-            )
+            finish()
+        }
+
+        findViewById<View>(R.id.widget_config_reset).setOnClickListener {
+            WidgetBackground.remove(this, intArrayOf(appWidgetId))
+            refreshOwningWidget()
             finish()
         }
     }

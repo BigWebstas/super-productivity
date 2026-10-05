@@ -14,6 +14,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.superproductivity.superproductivity.App
 import com.superproductivity.superproductivity.CapacitorMainActivity
 import com.superproductivity.superproductivity.R
+import com.superproductivity.superproductivity.service.TrackingForegroundService
 
 /**
  * Home screen widget showing the task currently being tracked — on this device,
@@ -48,7 +49,24 @@ class TrackingWidgetProvider : AppWidgetProvider() {
         }
         val taskId = intent.getStringExtra(EXTRA_TASK_ID) ?: return
         Log.d(TAG, "Stop tracking tap from widget: taskId=$taskId")
-        WidgetTrackingStopQueue.request(context, taskId)
+        // Stop the native counter here, not in Angular: with the activity
+        // dismissed from recents nothing would drain the queue, and the
+        // foreground service would keep accruing time until the app is reopened.
+        // The frozen total is handed to Angular to book exactly up to the tap.
+        val elapsedMs = if (
+            TrackingForegroundService.isTracking &&
+            TrackingForegroundService.currentTaskId == taskId
+        ) {
+            TrackingForegroundService.getElapsedMs()
+        } else {
+            null
+        }
+        WidgetTrackingStopQueue.request(context, taskId, elapsedMs)
+        if (elapsedMs != null) {
+            TrackingForegroundService.requestStop(context)
+        }
+        refreshAll(context)
+        TaskListWidgetProvider.refreshAll(context)
         // Contentless "drain now" signal for a live app — shared with the
         // task-list widget's done-tap queue, both mean "check native queues now".
         LocalBroadcastManager.getInstance(context)
@@ -68,9 +86,12 @@ class TrackingWidgetProvider : AppWidgetProvider() {
         /** Reads the `currentTask` field from the same blob the task-list widget uses. */
         private fun currentTask(context: Context): WidgetCurrentTask? {
             return try {
-                WidgetData.parseCurrentTask(
-                    (context.applicationContext as App).keyValStore
-                        .get(WidgetData.KEYVAL_KEY, "{}")
+                WidgetTrackingStopQueue.withoutPendingStop(
+                    context,
+                    WidgetData.parseCurrentTask(
+                        (context.applicationContext as App).keyValStore
+                            .get(WidgetData.KEYVAL_KEY, "{}")
+                    )
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to read widget data for tracking widget", e)
@@ -117,9 +138,13 @@ class TrackingWidgetProvider : AppWidgetProvider() {
             task: WidgetCurrentTask?
         ) {
             val views = RemoteViews(context.packageName, R.layout.widget_tracking)
-            WidgetBackground.apply(
-                views, R.id.widget_tracking_root, WidgetBackground.getColor(context, appWidgetId)
-            )
+            val style = WidgetBackground.styleFor(context, appWidgetId)
+            style.applyBackground(views, R.id.widget_tracking_root)
+            style.icon(views, R.id.widget_tracking_icon, WidgetInk.BRAND)
+            style.icon(views, R.id.widget_tracking_stop, WidgetInk.MUTED)
+            style.text(views, R.id.widget_tracking_title, WidgetInk.INK)
+            style.text(views, R.id.widget_tracking_device, WidgetInk.MUTED)
+            style.text(views, R.id.widget_tracking_focus, WidgetInk.MUTED)
 
             if (task != null) {
                 views.setTextViewText(

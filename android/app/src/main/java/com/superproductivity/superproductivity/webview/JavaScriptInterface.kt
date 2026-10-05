@@ -188,30 +188,7 @@ class JavaScriptInterface(
     @JavascriptInterface
     fun stopTrackingService() {
         safeCall("Failed to stop tracking service") {
-            val intent = Intent(activity, TrackingForegroundService::class.java)
-            if (TrackingForegroundService.isStartPending || TrackingForegroundService.isTracking) {
-                // A startForegroundService() may still be promoting: stopping via
-                // stopService() now could tear it down before startForeground()
-                // runs and crash with ForegroundServiceDidNotStartInTimeException.
-                // Routing as ACTION_STOP through onStartCommand lets it promote
-                // first, then stop cleanly.
-                intent.action = TrackingForegroundService.ACTION_STOP
-                try {
-                    activity.startService(intent)
-                } catch (e: IllegalStateException) {
-                    // App is in the background: startService() is disallowed here.
-                    // Only fall back to stopService() if no start is still pending
-                    // — stopping a not-yet-promoted service would re-trigger the
-                    // same crash. If a start IS pending, leave it: the pending
-                    // start promotes and a later foreground sync stops it cleanly.
-                    Log.d(TAG, "stopTrackingService: app backgrounded, falling back to stopService()", e)
-                    if (!TrackingForegroundService.isStartPending) {
-                        activity.stopService(Intent(activity, TrackingForegroundService::class.java))
-                    }
-                }
-            } else {
-                activity.stopService(intent)
-            }
+            TrackingForegroundService.requestStop(activity)
         }
     }
 
