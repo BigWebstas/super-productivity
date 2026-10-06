@@ -46,6 +46,7 @@
           }
 
           <task-title
+            (click)="clearSelectionOnTitleClick($event)"
             [resetToLastExternalValueTrigger]="t"
             [style.pointer-events]="isTouchActive() && t.title.length ? 'none' : 'auto'"
             [readonly]="isTouchSelectionMode()"

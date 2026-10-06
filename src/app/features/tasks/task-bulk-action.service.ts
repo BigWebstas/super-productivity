@@ -238,9 +238,14 @@ export class TaskBulkActionService {
 
   // ---- PROJECT ----------------------------------------------------------
 
-  async moveToProject(projectId: string): Promise<void> {
+  async moveToProject(projectId: string, taskIds?: readonly string[]): Promise<void> {
+    const resolved = taskIds
+      ? taskIds
+          .map((id) => this._taskEntities()[id])
+          .filter((task): task is Task => !!task)
+      : this._resolveInVisualOrder();
     const { eligible, skippedSubtasks } = splitParentOnly(
-      dedupeSubtasksOfSelectedParents(this._resolveInVisualOrder()),
+      dedupeSubtasksOfSelectedParents(resolved),
     );
     const tasks = dedupeByRepeatCfg(eligible.filter((t) => t.projectId !== projectId));
     if (!tasks.length) {

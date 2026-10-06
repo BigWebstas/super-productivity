@@ -423,6 +423,14 @@ describe('TaskBulkActionService', () => {
   });
 
   describe('moveToProject', () => {
+    it('uses the drag snapshot even if selection has cleared after drag end', async () => {
+      select([t('first'), t('second')]);
+      selectedIds.set(new Set());
+      await service.moveToProject('p2', ['second', 'deleted', 'first']);
+      expect(
+        moveToProjectService.moveToProject.calls.allArgs().map(([task]) => task.id),
+      ).toEqual(['second', 'first']);
+    });
     it('moves parents once per repeat config, skips subtasks and reports partial', async () => {
       select([
         t('r1', { repeatCfgId: 'cfg' }),
