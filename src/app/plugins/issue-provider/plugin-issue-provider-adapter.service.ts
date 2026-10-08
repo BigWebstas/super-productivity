@@ -29,6 +29,8 @@ import { withPluginOAuthTokenKey } from '../oauth/plugin-oauth-token-key.util';
 // so a partial that fields can be deleted from needs the modifier stripped.
 type MutableTaskChanges = { -readonly [K in keyof Task]?: Task[K] };
 
+const DEFAULT_DONE_STATES = ['closed', 'done', 'completed', 'resolved'];
+
 @Injectable({ providedIn: 'root' })
 export class PluginIssueProviderAdapterService implements IssueServiceInterface {
   private _registry = inject(PluginIssueProviderRegistryService);
@@ -252,7 +254,10 @@ export class PluginIssueProviderAdapterService implements IssueServiceInterface 
         // Due dates are dropped either way: they are set on task creation and
         // never re-pulled, so a refresh cannot reschedule what the user has
         // planned. Same rule as BaseIssueProviderService.getFreshDataForIssueTask.
-        const baseTaskData: MutableTaskChanges = this._buildBaseIssueTask(issue);
+        const baseTaskData: MutableTaskChanges = this._buildBaseIssueTask(
+          issue,
+          resolved.provider.definition.doneStates,
+        );
         delete baseTaskData.dueDay;
         delete baseTaskData.dueWithTime;
         for (const mapping of resolved.provider.definition.fieldMappings ?? []) {
@@ -468,7 +473,7 @@ export class PluginIssueProviderAdapterService implements IssueServiceInterface 
     syncValues: Record<string, unknown>,
   ): IssueTask {
     const data = issueData as PluginIssue;
-    const base = this._buildBaseIssueTask(data);
+    const base = this._buildBaseIssueTask(data, provider.definition.doneStates);
     const fieldValues = this._extractTaskFieldsFromIssueWithSyncValues(
       data,
       provider,
@@ -477,8 +482,8 @@ export class PluginIssueProviderAdapterService implements IssueServiceInterface 
     return { ...base, ...fieldValues } as IssueTask;
   }
 
-  private _buildBaseIssueTask(data: PluginIssue): IssueTask {
-    const isDone = this._computeIsDone(data);
+  private _buildBaseIssueTask(data: PluginIssue, doneStates?: string[]): IssueTask {
+    const isDone = this._computeIsDone(data, doneStates);
     const raw = data as Record<string, unknown>;
     const dueWithTime =
       typeof raw['dueWithTime'] === 'number' ? (raw['dueWithTime'] as number) : undefined;
@@ -502,12 +507,12 @@ export class PluginIssueProviderAdapterService implements IssueServiceInterface 
     };
   }
 
-  private _computeIsDone(issue: PluginIssue): boolean {
+  private _computeIsDone(issue: PluginIssue, doneStates?: string[]): boolean {
     const state = issue.state?.toLowerCase();
     if (!state) {
       return false;
     }
-    return ['closed', 'done', 'completed', 'resolved'].includes(state);
+    return (doneStates ?? DEFAULT_DONE_STATES).some((s) => s.toLowerCase() === state);
   }
 
   private _handleRemoteDeletion(requestedTask: Task): void {
