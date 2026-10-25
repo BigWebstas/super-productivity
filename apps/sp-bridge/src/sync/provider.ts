@@ -28,6 +28,7 @@ import { FileSeqStorage } from './seq-storage';
 export const createBridgeSyncProvider = (
   dataDir: string,
   seqStorage?: FileSeqStorage,
+  appVersion?: string,
 ): SuperSyncProvider => {
   const responseValidators: SuperSyncDeps['responseValidators'] = {
     validateOpUpload: validateOpUploadResponse,
@@ -60,9 +61,10 @@ export const createBridgeSyncProvider = (
     responseValidators,
     // Host owns the SP-specific fallback; the package never assumes it.
     defaultBaseUrl: SUPER_SYNC_DEFAULT_BASE_URL,
-    // Omitted on purpose: the version tells the server which clients predate a
-    // repair-semantics change, and the bridge is not the desktop app. Absent
-    // means "unknown", which the server already handles.
+    // Sent on every request, like the app: a future server version floor
+    // counts a request without it as an old client. Absent only when the host
+    // cannot supply one (headless tests).
+    appVersion,
   };
   return new SuperSyncProvider(deps);
 };

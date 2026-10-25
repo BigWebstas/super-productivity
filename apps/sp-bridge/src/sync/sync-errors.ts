@@ -11,6 +11,7 @@
  */
 import {
   AuthFailSPError,
+  ClientUpdateRequiredSPError,
   MissingCredentialsSPError,
   NetworkUnavailableSPError,
 } from '@sp/sync-providers/errors';
@@ -18,6 +19,7 @@ import { SyncCryptoError } from './crypto';
 
 export type SyncErrorCode =
   | 'auth_failed'
+  | 'update_required'
   | 'not_configured'
   | 'encryption'
   | 'network'
@@ -26,6 +28,11 @@ export type SyncErrorCode =
   | 'unknown';
 
 export const classifySyncError = (error: unknown): SyncErrorCode => {
+  // Before the auth check: a version refusal is not a credential problem and
+  // must never read as one.
+  if (error instanceof ClientUpdateRequiredSPError) {
+    return 'update_required';
+  }
   if (
     error instanceof AuthFailSPError ||
     error instanceof MissingCredentialsSPError ||

@@ -69,6 +69,7 @@ export interface StartedAgent {
 export const startAgent = async (
   dataDir: string = defaultDataDir(),
   port: number = LOCAL_REST_API_PORT,
+  appVersion?: string,
 ): Promise<StartedAgent> => {
   installHeadlessGlobals();
   const logLevelEnv = process.env.SP_BRIDGE_LOG_LEVEL ?? process.env.SP_AGENT_LOG_LEVEL;
@@ -137,7 +138,7 @@ export const startAgent = async (
     if (isSyncConfigured(cfg)) {
       if (!sync) {
         const seqStorage = new FileSeqStorage(dataDir);
-        const provider = createBridgeSyncProvider(dataDir, seqStorage);
+        const provider = createBridgeSyncProvider(dataDir, seqStorage, appVersion);
         sync = new SyncEngine({ store, opLog, provider, archive, seqStorage });
       } else {
         sync.bumpEpoch();

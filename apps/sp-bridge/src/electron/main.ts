@@ -564,7 +564,7 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 app.whenReady().then(async () => {
   try {
-    agent = await startAgent();
+    agent = await startAgent(undefined, undefined, app.getVersion());
   } catch (error) {
     // Surface it instead of dying silently: a background app that fails to
     // start with no window and no tray is indistinguishable from one that is
