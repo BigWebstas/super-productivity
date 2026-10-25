@@ -429,6 +429,36 @@ describe('LocalRestApiServer routes', () => {
     });
   });
 
+  it('sets, reads and clears priority', async () => {
+    await withServer(async ({ request }) => {
+      const created = await request('POST', '/tasks', {
+        body: { title: 'x', priority: 3 },
+      });
+      assert.equal(created.status, 201);
+      assert.equal(created.body.data.priority, 3);
+      const id = created.body.data.id;
+      const set = await request('PATCH', `/tasks/${id}`, { body: { priority: 1 } });
+      assert.equal(set.body.data.priority, 1);
+      const cleared = await request('PATCH', `/tasks/${id}`, {
+        body: { priority: null },
+      });
+      assert.equal(cleared.status, 200);
+      assert.equal(cleared.body.data.priority ?? null, null);
+    });
+  });
+
+  it('rejects an invalid priority', async () => {
+    await withServer(async ({ request }) => {
+      const created = await request('POST', '/tasks', { body: { title: 'x' } });
+      for (const priority of [0, 4, 'high', '2']) {
+        const res = await request('PATCH', `/tasks/${created.body.data.id}`, {
+          body: { priority },
+        });
+        assert.equal(res.status, 400, `priority ${priority} must be rejected`);
+      }
+    });
+  });
+
   it('rejects a malformed dueDay', async () => {
     await withServer(async ({ request }) => {
       const created = await request('POST', '/tasks', { body: { title: 'x' } });

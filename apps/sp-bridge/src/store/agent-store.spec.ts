@@ -12,7 +12,7 @@ import { ActionType } from '../../../../src/app/op-log/core/action-types.enum';
 import { createTask } from '../../../../src/app/features/tasks/task.test-helper';
 import { CURRENT_SCHEMA_VERSION } from '@sp/shared-schema';
 import { isMultiEntityPayload } from '@sp/sync-core';
-import { DEFAULT_GLOBAL_CONFIG } from '../../../../src/app/features/config/default-global-config.const';
+import { initialGlobalConfigState } from '../../../../src/app/features/config/store/global-config.reducer';
 
 const makeTask = (id: string, title: string) =>
   createTask({ id, title, tagIds: [], projectId: INBOX_PROJECT_ID });
@@ -175,9 +175,9 @@ describe('AgentStore', () => {
     );
   });
 
-  it('carries the default global config', () => {
+  it('carries the initial global config', () => {
     const store = new AgentStore('test-client-0001');
     const cfg = store.state.globalConfig as unknown as Record<string, unknown>;
-    assert.deepEqual(cfg, DEFAULT_GLOBAL_CONFIG);
+    assert.deepEqual(cfg, initialGlobalConfigState);
   });
 });

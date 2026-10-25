@@ -71,6 +71,7 @@ const ALLOWED_TASK_FIELDS = new Set<string>([
   'title',
   'notes',
   'isDone',
+  'priority',
   'timeEstimate',
   'timeSpent',
   'projectId',
@@ -177,6 +178,15 @@ const hasInvalidFieldValue = (fields: Json): string | undefined => {
     return 'notes must be a string';
   if ('isDone' in fields && typeof fields.isDone !== 'boolean')
     return 'isDone must be a boolean';
+  if (
+    'priority' in fields &&
+    fields.priority !== null &&
+    fields.priority !== 1 &&
+    fields.priority !== 2 &&
+    fields.priority !== 3
+  ) {
+    return 'priority must be 1 (low), 2 (medium), 3 (high) or null';
+  }
   for (const key of ['timeEstimate', 'timeSpent', 'plannedAt'] as const) {
     if (key in fields && typeof fields[key] !== 'number')
       return `${key} must be a number`;
