@@ -167,7 +167,14 @@ describe('TaskBulkActionService', () => {
             activeWorkContext$: defer(() => of({ isEnableBacklog })),
           },
         },
-        { provide: TranslateService, useValue: { currentLang: 'en', defaultLang: 'en' } },
+        {
+          provide: TranslateService,
+          useValue: {
+            currentLang: 'en',
+            defaultLang: 'en',
+            instant: (key: string) => key,
+          },
+        },
         { provide: TranslateStore, useValue: { getTranslations: () => ({}) } },
         { provide: LocaleDatePipe, useValue: { transform: () => 'DATE' } },
       ],
@@ -416,6 +423,14 @@ describe('TaskBulkActionService', () => {
   });
 
   describe('moveToProject', () => {
+    it('uses the drag snapshot even if selection has cleared after drag end', async () => {
+      select([t('first'), t('second')]);
+      selectedIds.set(new Set());
+      await service.moveToProject('p2', ['second', 'deleted', 'first']);
+      expect(
+        moveToProjectService.moveToProject.calls.allArgs().map(([task]) => task.id),
+      ).toEqual(['second', 'first']);
+    });
     it('moves parents once per repeat config, skips subtasks and reports partial', async () => {
       select([
         t('r1', { repeatCfgId: 'cfg' }),
@@ -553,6 +568,53 @@ describe('TaskBulkActionService', () => {
       await service.setEstimate(0);
       expect(snackService.open).toHaveBeenCalledWith(
         jasmine.objectContaining({ msg: 'F.TASK.MULTI_SELECT.S.ESTIMATE_CLEARED.OTHER' }),
+      );
+    });
+  });
+
+  describe('setPriority', () => {
+    it('updates only the tasks whose priority differs', async () => {
+      select([t('a'), t('same', { priority: 'high' }), t('low', { priority: 1 })]);
+
+      await service.setPriority(3);
+
+      expect(taskService.update).toHaveBeenCalledTimes(2);
+      expect(taskService.update).toHaveBeenCalledWith('a', { priority: 3 });
+      expect(taskService.update).toHaveBeenCalledWith('low', { priority: 3 });
+      expect(snackService.open).toHaveBeenCalledWith(
+        jasmine.objectContaining({
+          msg: 'F.TASK.MULTI_SELECT.S.PRIORITY_SET.OTHER',
+          translateParams: jasmine.objectContaining({
+            count: 2,
+            priority: T.F.TASK.CMP.PRIORITY_HIGH,
+          }),
+        }),
+      );
+    });
+
+    it('does nothing when every task already has that priority', async () => {
+      select([t('a', { priority: 2 }), t('b', { priority: 'medium' })]);
+
+      await service.setPriority(2);
+
+      expect(taskService.update).not.toHaveBeenCalled();
+      expect(snackService.open).toHaveBeenCalledWith(
+        jasmine.objectContaining({ msg: T.F.TASK.MULTI_SELECT.S.NOTHING_TO_DO }),
+      );
+    });
+
+    it('clears the priority and says so', async () => {
+      select([t('a', { priority: 3 }), t('none')]);
+
+      await service.setPriority(null);
+
+      expect(taskService.update).toHaveBeenCalledTimes(1);
+      expect(taskService.update).toHaveBeenCalledWith('a', { priority: null });
+      expect(snackService.open).toHaveBeenCalledWith(
+        jasmine.objectContaining({
+          msg: 'F.TASK.MULTI_SELECT.S.PRIORITY_CLEARED.OTHER',
+          translateParams: jasmine.objectContaining({ count: 1 }),
+        }),
       );
     });
   });

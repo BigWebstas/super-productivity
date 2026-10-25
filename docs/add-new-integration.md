@@ -137,8 +137,9 @@ PluginAPI.registerIssueProvider({
 
 The required contract is `configFields`, `getHeaders`, `searchIssues`, `getById`,
 `getIssueLink`, and `issueDisplay`. Optional capabilities include connection
-testing, comments, backlog import, field mappings, create/update/delete, and
-calendar time-block operations. Add only capabilities the provider actually
+testing, comments, backlog import, batch refresh (`getByIds`), field mappings,
+create/update/delete, time logging (`timeTracking`), and calendar time-block
+operations. Add only capabilities the provider actually
 supports.
 
 Use the `PluginHttp` argument for provider requests. It returns Promises, applies
@@ -217,8 +218,11 @@ or issue titles.
 For a bundled provider:
 
 1. Add its build to `packages/plugin-dev/scripts/build-all.js`.
-2. Copy the built output into `src/assets/bundled-plugins/<plugin-id>/`.
-3. Add the asset path to the bundled list in `src/app/plugins/plugin.service.ts`.
+2. Copy the built output into `src/assets/bundled-plugins/<plugin-dev dir name>/`
+   (the directory name, which can differ from the manifest id).
+3. Add the asset path to `BUNDLED_PLUGIN_PATHS` and the manifest id to
+   `BUNDLED_PLUGIN_IDS` in `src/app/plugins/bundled-plugins.const.ts`, and give
+   the plugin dir a `package.json` (release builds skip dirs without one).
 4. Add only English source strings; follow existing plugin i18n packaging.
 5. Update the issue-provider comparison in `docs/wiki/` in the same change.
 

@@ -20,6 +20,8 @@ import { Log } from '../../core/log';
 import { Location } from '@angular/common';
 import { EditorView } from '@codemirror/view';
 import { undo } from '@codemirror/commands';
+import { By } from '@angular/platform-browser';
+import { LiveMarkdownEditorComponent } from './live-markdown/live-markdown-editor.component';
 
 describe('InlineMarkdownComponent', () => {
   let component: InlineMarkdownComponent;
@@ -186,6 +188,69 @@ describe('InlineMarkdownComponent', () => {
       expect(component.changed.emit).toHaveBeenCalledWith(
         'Groceries\n- [ ] milk\n- [ ] eggs',
       );
+    });
+
+    // #10545: clicking the checklist button must drop a new item directly below
+    // the caret's line and leave the caret on it, click after click — not scatter
+    // the marker. The commit has to land in the editor's own document and
+    // selection synchronously (one CodeMirror transaction); the old path wrote
+    // the whole document back through the model input and restored the caret from
+    // a deferred timer, which mapped the caret to the document end and raced, so
+    // the next click inserted in an arbitrary place.
+    it('inserts a new item below the caret line on every click (#10545)', async () => {
+      fixture.componentRef.setInput('isShowChecklistToggle', true);
+      await mountLiveEditor('Alpha line\nBravo line\nCharlie line');
+      const view = editorView();
+
+      // Caret at the end of "Alpha line".
+      view.dispatch({ selection: { anchor: 10, head: 10 } });
+      component.toggleChecklistMode(new Event('click'));
+
+      // Synchronous: no timer, no model round-trip needed for the edit to land.
+      expect(view.state.doc.toString()).toBe(
+        'Alpha line\n- [ ] \nBravo line\nCharlie line',
+      );
+      // Caret sits on the new empty checkbox line, ready to type.
+      expect(view.state.selection.main.head).toBe(17);
+
+      // A second click adds another item right below the first, not elsewhere.
+      component.toggleChecklistMode(new Event('click'));
+
+      expect(view.state.doc.toString()).toBe(
+        'Alpha line\n- [ ] \n- [ ] \nBravo line\nCharlie line',
+      );
+      expect(view.state.selection.main.head).toBe(24);
+    });
+
+    // #10566: one checklist click is one save. The click commits into the editor
+    // via applyTransform and emits the result eagerly — the single op. When the
+    // editor later blurs it commits again; it must recognise that value as
+    // already saved and stay silent, or blur re-fires the same document and the
+    // note caller dispatches a second, redundant update op. The editor detects
+    // lost focus on an async CodeMirror measure that is not deterministic under
+    // the headless test browser, so drive its commit-on-blur directly — the exact
+    // code a real blur runs. Without the fix its emit guard stays stale here and
+    // the same value is emitted twice.
+    it('saves a checklist click once, even after the editor blurs (#10566)', async () => {
+      fixture.componentRef.setInput('isShowChecklistToggle', true);
+      await mountLiveEditor('Alpha line\nBravo line');
+      const view = editorView();
+      view.dispatch({ selection: { anchor: 10, head: 10 } });
+      const liveEditor = fixture.debugElement.query(
+        By.directive(LiveMarkdownEditorComponent),
+      ).componentInstance as LiveMarkdownEditorComponent;
+      spyOn(component.changed, 'emit');
+
+      component.toggleChecklistMode(new Event('click'));
+      // The click itself is the single save.
+      expect(component.changed.emit).toHaveBeenCalledOnceWith(
+        'Alpha line\n- [ ] \nBravo line',
+      );
+
+      // The editor blurs: it must not re-fire the value already saved above.
+      liveEditor.commitOnBlur();
+
+      expect(component.changed.emit).toHaveBeenCalledTimes(1);
     });
 
     // Typing must not save: a note is one op per edit session, not per keystroke.
